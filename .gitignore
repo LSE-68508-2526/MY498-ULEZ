@@ -47,3 +47,14 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# Raw data - too large for GitHub (Will be downloaded during the running of the code)
+data/raw/
+
+# Processed data - reproducible from code
+data/processed/
+
+# Quarto artefacts
+_site/
+.quarto/
+*_files/

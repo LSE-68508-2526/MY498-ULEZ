@@ -1,0 +1,455 @@
+---
+title: "1. Data Cleaning"
+subtitle: "MY498: Capstone Project 2025-26"
+author: "68508"
+date: today
+format:
+    html:
+        embed-resources: true
+        toc: false
+        number-sections: true
+        fontsize: 12pt
+---
+# Packages 
+Downloading and ensuring all required packages exist 
+```{r}
+required_packages <- c(
+    # Data wrangling
+    "tidyverse", # dplyr, tidyr, ggplot2, readr, purrr, stringr
+    "readODS", # read .ods files (DVLA tables)
+    "readxl", # read .xls/.xlsx files
+    "janitor", # clean_names(), tabyl()
+    "lubridate", # date handling for quarterly periods
+    "zoo", # yeargtr class for quarterly time series
+
+    # Spatial / GIS
+    "sf", # shape files, spatial joins, distance calc
+    "units", # unit-aware distances (metres/km)
+
+    # Econometrics 
+    "fixest", #feols() - fast fixed effects with clustered SEs (Callaway-Sant'Anna)
+    "did", # Callaway & Sant'Anna (2021) staggered DiD estimator
+    "rdrobust", # RDD: MSE-optimal bandwidth, robust CIs
+    "rddensity", # McCrary density test at the boundary
+
+    # Output / tables
+    "modelsummary", # regression tables
+    "kableExtra", # formatted HTML/LaTeX tables
+    "ggthemes", # clean plot themes
+
+    # Utilities 
+    "curl", # internet connectivity check 
+    "here" # project-relative paths
+)
+
+# Install missing packages
+installed <- rownames(installed.packages())
+to_install <- required_packages[!required_packages %in% installed]
+if (length(to_install) > 0) {
+    install.packages(to_install, repos = "https://cloud.r-project.org")
+}
+
+# Load all packages
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+message("All packages loaded successfully")
+```
+
+# Directory Creation 
+
+```{r}
+data <- here("data")
+raw <- here("data", "raw")
+Proc <- here('data', 'processed')
+
+# Create folders if it doesn't exist
+if (!dir.exists(data)) {
+    dir.create(data)
+}
+
+if (!dir.exists(raw)){
+    dir.create(raw)
+}
+if (!dir.exists(Proc)) {
+    dir.create(Proc)
+}
+
+# Helper function to download if files are not present
+download_if_missing <- function(url, dest) {
+    if (!file.exists(dest)) {
+        message("Downloading ", basename(dest), "...")
+        download.file(url, dest, mode='wb', quiet = TRUE)
+        message("Saved: ", dest)
+    } else {
+        message("Already present: ", basename(dest))
+    }
+}
+```
+
+# Data Cleaning 
+
+## VEH0132: Licensed ULEVs by Local Authority Quarterly
+```{r}
+# =============================================
+# VEH0132 - Licensed ULEVs by local authority, quarterly 
+# Primary outcome variable 
+# ================================================
+ veh0132 <- "https://assets.publishing.service.gov.uk/media/69ef35519ca985145673b9d7/veh0132.ods"
+
+ download_if_missing(veh0132, file.path(raw, "veh0132.ods"))
+
+ raw_ulev <- read_ods(
+    file.path(raw, "veh0132.ods"),
+    sheet = "VEH0132",
+    skip=4
+ )
+```
+
+```{r}
+ # quarter columns 
+qtr_cols_raw <- grep("^\\d{4} Q\\d$", names(raw_ulev), value = TRUE)
+message("Quarter columns found: ", length(qtr_cols_raw), " | ", tail(qtr_cols_raw, 1), " to ", qtr_cols_raw[1])
+
+raw_ulev <- clean_names(raw_ulev)
+
+qtr_cols <- grep("^x\\d{4}_q\\d$", names(raw_ulev), value = TRUE)
+
+# Filter to London boroughs and pivot to longer format
+
+raw_ulev <- raw_ulev |>
+    mutate(across(all_of(qtr_cols), as.character))
+
+ulev_long <- raw_ulev |>
+    filter(str_starts(ons_code, "E09")) |>
+    select(-units, -ons_sort) |>
+    pivot_longer(
+        cols = all_of(qtr_cols),
+        names_to = "quarter_raw",
+        values_to = "ulev_count"
+    ) |>
+    mutate(
+        year = as.integer(str_extract(quarter_raw, "\\d{4}")),
+        quarter = as.integer(str_extract(quarter_raw, "\\d$")),
+        yq = as.yearqtr(paste0(year, " Q", quarter)),
+        ulev_count = na_if(ulev_count, "[z]"),
+        ulev_count = na_if(ulev_count, '[x]'),
+        ulev_count = na_if(ulev_count, "[low]"),
+        ulev_count = na_if(ulev_count, ""),
+        ulev_count = as.numeric(str_remove_all(ulev_count, ","))
+    ) |>
+    select(ons_code, ons_geography, fuel, keepership, year, quarter, yq, ulev_count)
+
+# Aggregate to borough x quarter totals 
+ulev_total <- ulev_long |>
+    group_by(ons_code, ons_geography, year, quarter, yq) |>
+    summarise(
+        ulev_total = sum(ulev_count, na.rm = TRUE),
+        ulev_bev = sum(ulev_count[fuel == "BATTERY ELECTRIC"], na.rm = TRUE),
+        ulev_phev = sum(ulev_count[str_detect(fuel, "PLUG-IN")], na.rm = TRUE),
+        .groups = "drop"
+    )
+glimpse(ulev_total)
+```
+
+```{r}
+saveRDS(ulev_total, file.path(Proc, "ulev_total.rds"))
+message("Saved: ulev_total.rds")
+```
+
+## VEH0105: All Licensed Vehicled by Local Authority, Quarterly 
+
+```{r}
+# =============================================
+# VEH0105 : All licensed vehicles by local authority, quarterly 
+# Denominatory for ULEV compliance share 
+# ================================================
+veh0105 <- "https://assets.publishing.service.gov.uk/media/69ef3553ed93f72cf81633fc/veh0105.ods"
+
+download_if_missing(veh0105, file.path(raw, "veh0105.ods"))
+
+raw_veh <- read_ods(
+    file.path(raw, "veh0105.ods"),
+    sheet = "VEH0105",
+    skip = 4
+)
+
+names(raw_veh)[1:8]
+```
+
+```{r}
+qtr_cols_raw_veh <- grep("^\\d{4} Q\\d$", names(raw_veh), value = TRUE)
+message("Quarter columns found: ", length(qtr_cols_raw_veh), " | ", tail(qtr_cols_raw_veh, 1), " to ", qtr_cols_raw_veh[1])
+
+raw_veh <- clean_names(raw_veh)
+
+qtr_cols_veh <- grep("^x\\d{4}_q\\d$", names(raw_veh), value = TRUE)
+
+raw_veh <- raw_veh |>
+    mutate(across(all_of(qtr_cols_veh), as.character))
+
+# Filter to london boroughs
+cars_long <- raw_veh |>
+    filter(str_starts(ons_code, "E09"),
+        body_type == "Cars") |>
+    select(-units, -ons_sort) |>
+    pivot_longer(
+        cols = all_of(qtr_cols_veh),
+        names_to = "quarter_raw", 
+        values_to = "count_raw"
+    ) |>
+    mutate(
+        year = as.integer(str_extract(quarter_raw, "\\d{4}")),
+        quarter = as.integer(str_extract(quarter_raw, "\\d$")),
+        yq = as.yearqtr(paste0(year, " Q", quarter)),
+        count_raw = na_if(count_raw, "[z]"),
+        count_raw = na_if(count_raw, "[x]"),
+        count_raw = na_if(count_raw, "[low]"),
+        count_raw = na_if(count_raw, ""),
+        cars = as.numeric(str_remove_all(count_raw, ",")) * 1000
+    ) |>
+    select(ons_code, ons_geography, fuel, keepership, year, quarter, yq, cars)
+
+# Aggregate to borough x quarter total cars 
+cars_total <- cars_long |>
+    group_by(ons_code, ons_geography, year, quarter, yq) |>
+    summarise(
+        cars_total = sum(cars, na.rm=TRUE),
+        .groups = "drop"
+    )
+glimpse(cars_total)
+```
+
+```{r}
+saveRDS(cars_total, file.path(Proc, "cars_total.rds"))
+message("Saved: cars_total.rds")
+```
+
+## Compliance share 
+
+```{r}
+# ================================================
+# Compliance Share - merge ULEVs and total cars 
+# ================================================
+
+panel_compliance <- ulev_total |>
+    left_join(cars_total,
+        by = c("ons_code", "ons_geography", "year", "quarter", "yq")) |>
+    mutate(
+        ulev_share = ulev_total/cars_total,
+        post_announce = as.integer(yq >= as.yearqtr("2022 Q4")),
+        post_implement = as.integer(yq >= as.yearqtr("2023 Q3")),
+        anticipation_window = as.integer(
+            yq >= as.yearqtr("2022 Q4") & yq < as.yearqtr("2023 Q3")
+        ),
+        t_announce = (year - 2022) * 4 + (quarter - 4)
+    )
+
+    glimpse(panel_compliance)
+```
+
+```{r}
+saveRDS(panel_compliance, file.path(Proc, "panel_compliance.rds"))
+
+message("Saved: panel_compliance.rds")
+```
+
+```{r}
+# =========================================
+# Clean Environment 
+# =========================================
+rm(list = setdiff(ls(), c(
+    # Data 
+    "panel_compliance",
+    "ulev_total",
+    "cars_total",
+
+    # Paths
+    "raw",
+    "Proc",
+
+    # Helper function 
+    "download_if_missing",
+
+    # Package management
+    "required_packages",
+    "installed",
+    "to_install"
+)))
+
+gc()
+
+message("Objects retained: ", paste(ls(), collapse = ", "))
+```
+
+## Spatial Data 
+
+```{r}
+# =============================================
+# Spatial - London borough boundaries 
+# ============================================
+borough_spatial <- "https://data.london.gov.uk/download/20od9/9ba8c833-6370-4b11-abdc-314aa020d5e0/statistical-gis-boundaries-london.zip"
+
+download_if_missing(borough_spatial, file.path(raw, "london_boundaries.zip"))
+
+# Unzip files 
+boundaries_dir <- file.path(raw, "london_boundaries")
+if (!dir.exists(boundaries_dir)){
+    unzip(file.path(raw, "london_boundaries.zip"), exdir = boundaries_dir)
+    message("Unzipped boundaries.")
+}
+
+boroughs_sf <- st_read(
+    file.path(boundaries_dir, "statistical-gis-boundaries-london/ESRI/London_Borough_Excluding_MHW.shp")
+) |>
+    clean_names() |>
+    rename(ons_code = gss_code, la_name=name) |>
+    select(ons_code, la_name, geometry) |>
+    st_set_crs(27700) |>
+    st_make_valid()
+```
+
+```{r}
+# Compute centroids
+boroughs_sf <- boroughs_sf |>
+    mutate(
+        centroid = st_centroid(geometry),
+        centroid_x = st_coordinates(centroid)[,1],
+        centroid_y = st_coordinates(centroid)[,2]
+    )
+
+centroids_sf <- boroughs_sf |>
+    st_drop_geometry() |>
+    st_as_sf(coords = c("centroid_x", "centroid_y"), crs = 27700)
+
+message("Boroughs loaded: ", nrow(boroughs_sf))
+```
+
+```{r}
+# =========================================
+# ULEZ Boundaries 
+# ==========================================
+
+# 2019 - original ULEZ zone (within Congestion charge zone)
+boundary_2019 <- "https://data.london.gov.uk/download/v8onw/84a78e36-7c27-4ba0-868f-13a76e1b50cb/ULEZCentral_CongestionChargingZone.zip"
+
+download_if_missing(boundary_2019, file.path(raw, "ulez_2019.zip"))
+
+ulez_2019_dir <- file.path(raw, "ulez_2019")
+if (!dir.exists(ulez_2019_dir)){
+    unzip(file.path(raw, "ulez_2019.zip"), exdir = ulez_2019_dir)
+    message("Unzipped ulez_2019.")
+}
+
+list.files(ulez_2019_dir, recursive = TRUE)
+```
+
+```{r}
+ulez_2019 <- st_read(
+    file.path(ulez_2019_dir, "Shapefile/UltraLowEmissionsZoneBoundary(ULEZ).shp")
+) |>
+    st_set_crs(27700) |>
+    st_make_valid()
+
+# Convert the ULEZ 2019 polygon to a line so we can measure distance 
+# to the boundary edge rather than to the interior of the polygon
+ulez_2019_line <- st_cast(st_union(ulez_2019), "MULTILINESTRING")
+
+dist_2019 <- st_distance(centroids_sf, ulez_2019_line)
+
+boroughs_sf <- boroughs_sf |>
+    mutate(
+        inside_2019 = as.integer(lengths(st_intersects(boroughs_sf, ulez_2019)) > 0
+        ),
+        dist_to_2019_km = as.numeric(dist_2019[,1]) / 1000,
+        rv_2019 = ifelse(inside_2019==1,
+        -dist_to_2019_km, dist_to_2019_km)
+    )
+
+message("Boroughs inside 2019 zone: ", sum(boroughs_sf$inside_2019))
+```
+
+```{r}
+# =============================================
+# ULEZ 2021 boundary - expanded to North/South Circular
+# ============================================
+boundary_2021 <- "https://data.london.gov.uk/download/vdjx4/56a082c1-4626-4d6f-80fe-d7fa99d8fdd5/InnerUltraLowEmissionZone.zip"
+
+download_if_missing(boundary_2021, file.path(raw, "ulez_2021.zip"))
+
+ulez_2021_dir <- file.path(raw, "ulez_2021")
+if (!dir.exists(ulez_2021_dir)) {
+    unzip(file.path(raw, "ulez_2021.zip"), exdir = ulez_2021_dir)
+    message("Unzipped ulez_2021.")
+}
+ 
+list.files(ulez_2021_dir, recursive=TRUE)
+```
+
+```{r}
+ulez_2021 <- st_read(file.path(ulez_2021_dir, "InnerUltraLowEmissionZone.shp")) |>
+    st_set_crs(27700) |>
+    st_make_valid()
+```
+
+```{r}
+# Convert to line for distance calculation
+ulez_2021_line <- st_cast(st_union(ulez_2021), "MULTILINESTRING")
+
+# Distance from each borough centroid to the 2021 boundary line
+dist_2021 <- st_distance(centroids_sf, ulez_2021_line)
+
+# Add to boroughs_sf
+boroughs_sf <- boroughs_sf |>
+    mutate(
+        inside_2021 = as.integer(lengths(st_within(centroids_sf, ulez_2021)) > 0
+        ),
+        dist_to_2021_km = as.numeric(dist_2021[,1]) / 1000,
+        rv_2021 = ifelse(inside_2021 == 1,
+        -dist_to_2021_km, dist_to_2021_km)
+    )
+
+message("Boroughs inside 2021 zone: ", sum(boroughs_sf$inside_2021))
+```
+
+```{r}
+# ========================================
+# ULEZ 2023 Boundary
+# ========================================
+download_if_missing("https://data.london.gov.uk/download/vd455/2e43ce0a-5ae3-41cb-be60-e33b662f5470/londonWideUltraLowEmissionZone.zip", file.path(raw, "ulez_2023.zip")
+)
+
+ulez_2023_dir <- file.path(raw, "ulez_2023")
+
+if (!dir.exists(ulez_2023_dir)) {
+    unzip(file.path(raw,"ulez_2023.zip"), exdir = ulez_2023_dir)
+    message("Unzipped ulez_2023.")
+}
+
+list.files(ulez_2023_dir, recursive = TRUE)
+```
+
+```{r}
+ulez_2023 <- st_read(file.path(ulez_2023_dir, "londonWideUltraLowEmissionZone.shp")) |>
+    st_set_crs(27700) |>
+    st_make_valid()
+
+ulez_2023_line <- st_cast(st_union(ulez_2023), "MULTILINESTRING")
+
+dist_2023 <- st_distance(centroids_sf, ulez_2023_line)
+
+boroughs_sf <- boroughs_sf |>
+    mutate(
+        dist_to_2023_km = as.numeric(dist_2023[,1]) / 1000,
+        rv_2023 = ifelse(
+            lengths(st_within(centroids_sf, ulez_2023)) > 0,
+            -dist_to_2023_km, dist_to_2023_km
+        )
+    )
+```
+
+```{r}
+boroughs_sf <- boroughs_sf |>
+    mutate(
+        treated = as.integer(rv_2021 > 0)
+    )
+```
