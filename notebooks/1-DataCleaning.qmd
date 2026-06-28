@@ -39,14 +39,23 @@ required_packages <- c(
 
     # Utilities 
     "curl", # internet connectivity check 
-    "here" # project-relative paths
+    "here", # project-relative paths
+    "nomisr" # programmatic access to ONS/OMIS data
 )
 
 # Install missing packages
 installed <- rownames(installed.packages())
 to_install <- required_packages[!required_packages %in% installed]
+
 if (length(to_install) > 0) {
     install.packages(to_install, repos = "https://cloud.r-project.org")
+}
+
+if (!"nomisr" %in% rownames(installed.packages())) {
+    if(!"remotes" %in% rownames(installed.packaages())) {
+        install.packages("remotes", repos = "https://cloud.r-project.org")
+    }
+    remotes::install_github("ropensci/nomisr")
 }
 
 # Load all packages
@@ -452,4 +461,147 @@ boroughs_sf <- boroughs_sf |>
     mutate(
         treated = as.integer(rv_2021 > 0)
     )
+```
+
+```{r}
+# ===============================================
+# Clean environment
+# ===============================================
+
+rm(list = setdiff(ls(), c(
+    # Data 
+    "panel_compliance",
+    "boroughs_sf",
+    "centroids_sf",
+
+    # Paths 
+    "raw",
+    "Proc",
+    "data",
+
+    # Helper function 
+    "download_if_missing"
+)))
+
+gc()
+message("Objects retained: ", paste(ls(), collapse = ", "))
+
+```
+
+## Control Variables
+
+```{r}
+# ===================================================
+# ONS Census 2021 - Car/van availability (TS045)
+# Source: Nomis API - NM_2063_1
+# Cross-sectional control for baseline vehicle ownership
+# ==============================================
+
+car_avail_raw <- nomis_get_data(
+    id = "NM_2063_1", # TS045 car/van availability 
+    time = "latest", # 2021 Census
+    geography = "TYPE424", # local authority district / unitary 
+    C2021_CARS_5 = "1,2,3,4", # all categories except total 
+    measures = 20100, # counts
+    select = c("GEOGRAPHY_NAME", "GEOGRAPHY_CODE", "C2021_CARS_5_NAME", "OBS_VALUE")
+)
+```
+
+```{r}
+car_avail <- car_avail_raw |>
+    clean_names() |>
+    filter(str_starts(geography_code, "E09")) |>
+    pivot_wider(
+        names_from = c2021_cars_5_name,
+        values_from = obs_value
+    ) |>
+    clean_names() |>
+    rename(
+        ons_code = geography_code, 
+        la_name = geography_name
+    ) |>
+    mutate(
+        total_households = no_cars_or_vans_in_household + x1_car_or_van_in_household + x2_cars_or_vans_in_household + x3_or_more_cars_or_vans_in_household,
+
+        pct_no_car = no_cars_or_vans_in_household / total_households, 
+        pct_car_owner = 1 - pct_no_car, 
+
+        avg_cars_hh = (0 * no_cars_or_vans_in_household + 1* x1_car_or_van_in_household + 2 * x2_cars_or_vans_in_household + 3.5 * x3_or_more_cars_or_vans_in_household) / total_households
+    ) |>
+    select(ons_code, la_name, total_households, pct_no_car, pct_car_owner, avg_cars_hh)
+
+glimpse(car_avail)
+```
+
+```{r}
+saveRDS(car_avail, file.path(Proc, "car_avail.rds"))
+message("Saved: car_avail.rds")
+```
+
+```{r}
+# =============================================
+# ONS Census 2021 - Household deprivation (TS011)
+# Source: Nomis API
+# Cross-sectional control for socioeconomic status
+# ===================================================
+
+# Find the correct dataset ID
+ts011_search <- nomis_search(name = "*TS011*")
+print(ts011_search[, c("id", "name.value")])
+
+# checking dimensions
+nomis_get_metadata("NM_2031_1")
+nomis_get_metadata("NM_2031_1", "C2021_DEP_6")
+
+deprivation_raw <- nomis_get_data(
+    id = "NM_2031_1",
+    time = "latest",
+    geography = "TYPE424",
+    C2021_DEP_6 = "1,2,3,4,5",
+    measures = 20100,
+    select = c("GEOGRAPHY_NAME", "GEOGRAPHY_CODE", "C2021_DEP_6_NAME", "OBS_VALUE")
+)
+```
+
+```{r}
+# Clean and filter to London boroughs
+deprivation <- deprivation_raw |>
+    clean_names() |>
+    filter(str_starts(geography_code, "E09")) |>
+    pivot_wider(
+        names_from  = c2021_dep_6_name,
+        values_from = obs_value
+    ) |>
+    clean_names() |>
+    rename(
+        ons_code = geography_code,
+        la_name  = geography_name
+    ) |>
+    mutate(
+        # Total households from parts
+        total_hh = household_is_not_deprived_in_any_dimension +
+                   household_is_deprived_in_one_dimension +
+                   household_is_deprived_in_two_dimensions +
+                   household_is_deprived_in_three_dimensions +
+                   household_is_deprived_in_four_dimensions,
+        # Share deprived in at least one dimension
+        pct_deprived = 1 - (household_is_not_deprived_in_any_dimension / 
+                             total_hh),
+        # Weighted deprivation index — more dimensions = higher weight
+        deprivation_index = (1 * household_is_deprived_in_one_dimension +
+                             2 * household_is_deprived_in_two_dimensions +
+                             3 * household_is_deprived_in_three_dimensions +
+                             4 * household_is_deprived_in_four_dimensions) /
+                             total_hh
+    ) |>
+    select(ons_code, la_name, pct_deprived, deprivation_index)
+
+saveRDS(deprivation, file.path(Proc, "deprivation.rds"))
+
+glimpse(deprivation)
+```
+
+```{r}
+saveRDS(deprivation, file.path(Proc, "deprivation.rds"))
+message("Saved: deprivation.rds")
 ```
