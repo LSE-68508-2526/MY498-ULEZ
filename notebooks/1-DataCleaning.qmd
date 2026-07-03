@@ -605,3 +605,228 @@ glimpse(deprivation)
 saveRDS(deprivation, file.path(Proc, "deprivation.rds"))
 message("Saved: deprivation.rds")
 ```
+
+```{r}
+# ============================================== 
+# ONS Census 2021 - Population density (TS006) 
+# Source: Nomis API 
+# Cross-sectional control for urban density
+# ===============================================
+
+pop_density_raw <- nomis_get_data(
+    id        = "NM_2026_1",
+    time      = "latest",
+    geography = "TYPE154",
+    measures  = 20100
+)
+pop_density <- pop_density_raw |>
+    clean_names() |>
+    filter(str_starts(geography_code, "E09")) |>
+    rename(
+        ons_code = geography_code,
+        la_name = geography_name,
+        pop_density_per_km2 = obs_value
+    ) |>
+    select(ons_code, la_name, pop_density_per_km2)
+
+saveRDS(pop_density, file.path(Proc, "pop_density.rds"))
+
+glimpse(pop_density)
+```
+
+```{r}
+# ============================================
+# ASHE - Median annual earning by local authority (time-varying)
+# Source: Nomis API
+# ==============================================
+
+ashe_raw <- map_dfr(2011:2024, function(yr) {
+    nomis_get_data(
+        id        = "NM_30_1",
+        time      = as.character(yr),
+        geography = "TYPE424",
+        sex       = 7,
+        item      = 2,
+        pay       = 7,
+        measures  = 20100
+    )
+})
+
+glimpse(ashe_raw[, c("DATE", "GEOGRAPHY_NAME", "GEOGRAPHY_CODE", "OBS_VALUE")])
+```
+
+```{r}
+ashe <- ashe_raw |>
+    clean_names() |>
+    filter(str_starts(geography_code, "E09")) |>
+    rename(
+        ons_code = geography_code, 
+        la_name = geography_name,
+        year = date,
+        median_earnings_gbp = obs_value
+    ) |>
+    select(ons_code, la_name, year, median_earnings_gbp)
+
+glimpse(ashe)
+```
+
+```{r}
+saveRDS(ashe, file.path(Proc, "ashe_earnings.rds"))
+```
+
+```{r}
+# =============================================================================
+# House prices — HMLR UK House Price Index (Average prices)
+# Source: Land Registry public data
+# Monthly average prices by local authority, back to 1968
+# =============================================================================
+
+download_if_missing(
+    "https://publicdata.landregistry.gov.uk/market-trend-data/house-price-index-data/Average-prices-2026-04.csv",
+    file.path(raw, "house_prices.csv")
+)
+
+hpi_raw <- read_csv(
+    file.path(raw, "house_prices.csv"),
+    show_col_types = FALSE
+)
+
+glimpse(hpi_raw)
+```
+
+```{r}
+hpi <- hpi_raw |>
+    clean_names()|>
+    filter(str_starts(area_code, "E09")) |>
+    mutate(
+        year = year(date),
+        month = month(date),
+        quarter = case_when(
+            month %in% c(1,2,3) ~ 1L,
+            month %in% c(4,5,6) ~ 2L, 
+            month %in% c(7,8,9) ~ 3L,
+            month %in% c(10,11,12) ~ 4L
+        ),
+        yq = as.yearqtr(paste0(year, " Q", quarter))
+    ) |>
+    group_by(area_code, region_name, year, quarter, yq) |>
+    slice_max(date, n=1) |>
+    ungroup() |>
+    rename(
+        ons_code = area_code,
+        la_name = region_name,
+        house_price = average_price
+    ) |>
+    select(ons_code, la_name, year, quarter, yq, house_price)
+
+glimpse(hpi)
+```
+
+```{r}
+saveRDS(hpi, file.path(Proc, "house_prices.rds"))
+```
+
+```{r}
+# ===============================================
+# Clean environment 
+# ===============================================
+
+rm(list = setdiff(ls(), c(
+    # Core data 
+    "panel_compliance",
+    "boroughs_sf",
+
+    # Controls
+    "car_avail",
+    "deprivation",
+    "pop_density",
+    "ashe",
+    "hpi",
+
+    # Paths
+    "raw",
+    "Proc",
+
+    # Helper
+    "download_if_missing"
+)))
+
+gc()
+message("Objects retained: ", paste(ls(), collapse =", "))
+```
+
+## Final Panel assembly 
+
+```{r}
+# ==================================================
+# Final panel assembly
+# ==================================================
+
+# Extract spatial variables from boroughs_sf (keep geometry)
+borough_vars <- boroughs_sf |>
+    select(ons_code, treated, rv_2019, rv_2021, rv_2023,
+           dist_to_2019_km, dist_to_2021_km, dist_to_2023_km,
+           centroid_x, centroid_y, geometry)
+
+# Merge everything into one panel
+
+analysis_panel <- panel_compliance |>
+    rename(la_name = ons_geography) |>
+    left_join(borough_vars |> st_drop_geometry(), by = "ons_code") |>
+    left_join(car_avail,   by = c("ons_code", "la_name")) |>
+    left_join(deprivation, by = c("ons_code", "la_name")) |>
+    left_join(pop_density, by = c("ons_code", "la_name")) |>
+    left_join(ashe, by = c("ons_code", "la_name", "year")) |>
+    # HPI joined on ons_code + year + quarter only — avoids name mismatch
+    left_join(
+        hpi |> select(-la_name),
+        by = c("ons_code", "year", "quarter", "yq")
+    ) |>
+    left_join(borough_vars |> select(ons_code, geometry), by = "ons_code") |>
+    st_as_sf()
+
+analysis_panel <- analysis_panel |>
+    filter(yq <= as.yearqtr("2024 Q4"))
+
+message("Trimmed panel: ", nrow(analysis_panel), " rows")
+message("Time range: ", min(analysis_panel$yq), " to ", max(analysis_panel$yq))
+```
+
+```{r}
+saveRDS(analysis_panel, file.path(Proc, "analysis_panel.rds"))
+message("Saved: analysis_panel.rds — ", nrow(analysis_panel), " rows, ",
+        ncol(analysis_panel), " columns")
+```
+
+# Final Quality Checks 
+
+```{r}
+# ===================================================
+# Final quality checks
+# ===================================================
+
+# 1. Check panel is balanced
+panel_balance <- analysis_panel |>
+    st_drop_geometry() |>
+    group_by(ons_code) |>
+    summarise(n_quarters = n(), .groups = "drop")
+
+message("Balanced panel check:")
+message("  Min quarters per borough: ", min(panel_balance$n_quarters))
+message("  Max quarters per borough: ", max(panel_balance$n_quarters))
+
+# 2. Check treatment split
+message("\nTreatment split:")
+message("  Treated (outer) boroughs: ",   sum(boroughs_sf$treated == 1))
+message("  Control (inner) boroughs: ",   sum(boroughs_sf$treated == 0))
+
+# 3. Check NAs in key variables
+message("\nNAs in key variables:")
+message("  ulev_share: ",          sum(is.na(analysis_panel$ulev_share)))
+message("  house_price: ",         sum(is.na(analysis_panel$house_price)))
+message("  median_earnings_gbp: ", sum(is.na(analysis_panel$median_earnings_gbp)))
+message("  rv_2021: ",             sum(is.na(analysis_panel$rv_2021)))
+
+# 4. Check time range
+message("\nTime range: ", min(analysis_panel$yq), " to ", max(analysis_panel$yq))
+```
