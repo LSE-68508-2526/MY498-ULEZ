@@ -1,0 +1,299 @@
+---
+title: "2. Descriptive Analysis"
+subtitle: "MY498: Capstone Project 2025-26"
+author: "68508"
+date: today
+format:
+    html:
+        embed-resources: true
+        toc: true
+        number-sections: true
+        fontsize: 12pt
+---
+```{r}
+#| label: setup
+#| message: false
+
+library(tidyverse)
+library(zoo)
+library(sf)
+library(here)
+library(kableExtra)
+library(ggthemes)
+
+Proc <- here("data", "processed")
+raw  <- here("data", "raw")
+
+# Load analysis panel and spatial data
+analysis_panel <- readRDS(file.path(Proc, "analysis_panel.rds"))
+study_sf       <- readRDS(file.path(Proc, "study_sf.rds"))
+
+message("Panel loaded: ", nrow(analysis_panel), " rows | ",
+        n_distinct(analysis_panel$ons_code), " study units")
+```
+
+```{r}
+#| label: summary-stats
+#| message: false
+
+# Summary statistics by group 
+summary_stats <- analysis_panel |>
+    st_drop_geometry() |>
+    filter(yq == as.yearqtr("2022 Q3")) |> # pre-announcement snapshot
+    mutate(
+        group = case_when(
+            london == 1 & treated == 0 ~ "Inner London (Control)",
+            london == 1 & treated == 1 ~ "Outer London (Treated)",
+            london == 0 ~ "Surrounding Districts"
+        )
+    ) |>
+    group_by(group) |>
+    summarise(
+        n = n(),
+        mean_ulev_share = mean(ulev_share, na.rm = TRUE),
+        mean_cars_total = mean(cars_total, na.rm = TRUE),
+        mean_pct_no_car = mean(pct_no_car, na.rm=TRUE),
+        mean_deprivation = mean(deprivation_index, na.rm = TRUE),
+        mean_pop_density = mean(pop_density_per_km2, na.rm = TRUE),
+        mean_house_price = mean(house_price, na.rm = TRUE),
+        mean_earnings = mean(median_earnings_gbp, na.rm = TRUE),
+        .groups = "drop"
+    )
+summary_stats |>
+    kable(
+        digits  = 3,
+        caption = "Summary Statistics by Group — Pre-Announcement (2022 Q3)",
+        col.names = c("Group", "N", "ULEV Share", "Total Cars",
+                      "% No Car", "Deprivation Index", "Pop Density /km²",
+                      "Avg House Price", "Median Earnings")
+    ) |>
+    kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+```{r}
+#| label: raw-trends
+#| message: false
+
+# Aggregate to group means by quarter
+trends_data <- analysis_panel |>
+    st_drop_geometry() |>
+    mutate(
+        group = case_when(
+            london == 1 & treated == 0 ~ "Inner London (Control)",
+            london == 1 & treated == 1 ~ "Outer London (Treated)",
+            london == 0                ~ "Surrounding Districts (Never-Treated)"
+        )
+    ) |>
+    group_by(yq, group) |>
+    summarise(
+        mean_ulev_share = mean(ulev_share, na.rm = TRUE),
+        .groups = "drop"
+    )
+
+ggplot(trends_data, aes(x = yq, y = mean_ulev_share, colour = group)) +
+    geom_line(linewidth = 0.8) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2022 Q4")),
+               linetype = "dashed", colour = "black", linewidth = 0.6) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2023 Q3")),
+               linetype = "dashed", colour = "red", linewidth = 0.6) +
+    annotate("text", x = as.numeric(as.yearqtr("2022 Q4")),
+             y = Inf, vjust = 1.5, hjust = -0.1,
+             label = "Announcement", size = 3, colour = "black") +
+    annotate("text", x = as.numeric(as.yearqtr("2023 Q3")),
+             y = Inf, vjust = 1.5, hjust = -0.1,
+             label = "Implementation", size = 3, colour = "red") +
+    scale_colour_manual(values = c(
+        "Inner London (Control)"               = "steelblue",
+        "Outer London (Treated)"               = "firebrick",
+        "Surrounding Districts (Never-Treated)" = "darkgreen"
+    )) +
+    labs(
+        title    = "ULEV Compliance Share by Group",
+        subtitle = "Mean across study units by quarter",
+        x        = "Quarter",
+        y        = "ULEV share (ULEVs / total cars)",
+        colour   = NULL,
+        caption  = "Black dashed = announcement (2022 Q4). Red dashed = implementation (2023 Q3)."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: study-area-map
+#| message: false
+
+study_sf <- study_sf |>
+    mutate(london = as.integer(str_starts(ons_code, "E09")))
+
+# Load ULEZ boundaries for the map
+ulez_2021 <- st_read(
+    file.path(raw, "ulez_2021/InnerUltraLowEmissionZone.shp"),
+    quiet = TRUE
+) |>
+    st_set_crs(27700)
+
+ulez_2023 <- st_read(
+    file.path(raw, "ulez_2023/londonWideUltraLowEmissionZone.shp"),
+    quiet = TRUE
+) |>
+    st_set_crs(27700)
+
+# Map
+ggplot() +
+    geom_sf(data = study_sf |> filter(london == 0),
+            fill = "lightyellow", colour = "orange",
+            linewidth = 0.4) +
+    geom_sf(data = study_sf |> filter(london == 1, treated == 1),
+            fill = "#f4a582", colour = "grey50",
+            linewidth = 0.3) +
+    geom_sf(data = study_sf |> filter(london == 1, treated == 0),
+            fill = "#92c5de", colour = "grey50",
+            linewidth = 0.3) +
+    geom_sf(data = ulez_2021, fill = NA, colour = "darkblue",
+            linewidth = 0.7, linetype = "dashed") +
+    geom_sf(data = ulez_2023, fill = NA, colour = "darkred",
+            linewidth = 0.7, linetype = "dashed") +
+    labs(
+        title    = "Study Area and Treatment Assignment",
+        subtitle = "Blue = Inner London (control)\nRed = Outer London (treated)\nYellow = Surrounding districts (never-treated)",
+        caption  = "Blue dashed = 2021 ULEZ boundary (N/S Circular)\nRed dashed = 2023 ULEZ boundary (Greater London)"
+    ) +
+    theme_minimal() +
+    theme(
+        axis.text  = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank()
+    )
+```
+
+```{r}
+#| label: balance-table
+#| message: false
+
+balance <- analysis_panel |>
+    st_drop_geometry() |>
+    filter(yq == as.yearqtr("2022 Q3")) |>
+    mutate(
+        group = case_when(
+            london == 1 & treated == 0 ~ "Inner London\n(Control)",
+            london == 1 & treated == 1 ~ "Outer London\n(Treated)",
+            london == 0                ~ "Surrounding\nDistricts"
+        )
+    ) |>
+    group_by(group) |>
+    summarise(
+        `N units`                    = n(),
+        `ULEV share (%)`             = round(mean(ulev_share, na.rm=TRUE) * 100, 2),
+        `BEV share (%)`              = round(mean(bev_share, na.rm=TRUE) * 100, 2),
+        `PHEV share (%)`             = round(mean(phev_share, na.rm=TRUE) * 100, 2),
+        `Company share (%)`          = round(mean(company_share, na.rm=TRUE) * 100, 2),
+        `Private share (%)`          = round(mean(private_share, na.rm=TRUE) * 100, 2),
+        `Total cars`                 = round(mean(cars_total, na.rm=TRUE)),
+        `% No car`                   = round(mean(pct_no_car, na.rm=TRUE) * 100, 1),
+        `Avg cars per HH`            = round(mean(avg_cars_hh, na.rm=TRUE), 2),
+        `Deprivation index`          = round(mean(deprivation_index, na.rm=TRUE), 3),
+        `Pop density (per km²)`      = round(mean(pop_density_per_km2, na.rm=TRUE)),
+        `Avg house price (£)`        = round(mean(house_price, na.rm=TRUE)),
+        `Median earnings (£)`        = round(mean(median_earnings_gbp, na.rm=TRUE)),
+        .groups = "drop"
+    ) |>
+    t() |>
+    as.data.frame()
+
+# Fix column names
+colnames(balance) <- balance[1, ]
+balance <- balance[-1, ]
+
+balance |>
+    kable(
+        caption = "Balance Table — Pre-Announcement Characteristics (2022 Q3)"
+    ) |>
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed")) |>
+    row_spec(1:2, bold = TRUE)
+```
+
+```{r}
+#| label: disaggregated-trends
+#| message: false
+
+# Aggregate disaggregated shares by group and quarter
+disagg_data <- analysis_panel |>
+    st_drop_geometry() |>
+    mutate(
+        group = case_when(
+            london == 1 & treated == 0 ~ "Inner London (Control)",
+            london == 1 & treated == 1 ~ "Outer London (Treated)",
+            london == 0                ~ "Surrounding Districts"
+        )
+    ) |>
+    group_by(yq, group) |>
+    summarise(
+        mean_bev_share     = mean(bev_share,     na.rm = TRUE),
+        mean_phev_share    = mean(phev_share,    na.rm = TRUE),
+        mean_company_share = mean(company_share, na.rm = TRUE),
+        mean_private_share = mean(private_share, na.rm = TRUE),
+        .groups = "drop"
+    )
+
+# BEV vs PHEV
+p1 <- disagg_data |>
+    pivot_longer(cols = c(mean_bev_share, mean_phev_share),
+                 names_to = "fuel_type",
+                 values_to = "share") |>
+    mutate(fuel_type = recode(fuel_type,
+                              "mean_bev_share"  = "BEV",
+                              "mean_phev_share" = "PHEV")) |>
+    ggplot(aes(x = yq, y = share, colour = group, linetype = fuel_type)) +
+    geom_line(linewidth = 0.7) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2022 Q4")),
+               linetype = "dashed", colour = "black", linewidth = 0.5) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2023 Q3")),
+               linetype = "dashed", colour = "red", linewidth = 0.5) +
+    scale_colour_manual(values = c(
+        "Inner London (Control)" = "steelblue",
+        "Outer London (Treated)" = "firebrick",
+        "Surrounding Districts"  = "darkgreen"
+    )) +
+    labs(
+        title    = "BEV vs PHEV Share by Group",
+        x        = "Quarter",
+        y        = "Share of total cars",
+        colour   = NULL,
+        linetype = "Fuel type"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+
+# Company vs Private
+p2 <- disagg_data |>
+    pivot_longer(cols = c(mean_company_share, mean_private_share),
+                 names_to = "keepership",
+                 values_to = "share") |>
+    mutate(keepership = recode(keepership,
+                               "mean_company_share" = "Company",
+                               "mean_private_share" = "Private")) |>
+    ggplot(aes(x = yq, y = share, colour = group, linetype = keepership)) +
+    geom_line(linewidth = 0.7) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2022 Q4")),
+               linetype = "dashed", colour = "black", linewidth = 0.5) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2023 Q3")),
+               linetype = "dashed", colour = "red", linewidth = 0.5) +
+    scale_colour_manual(values = c(
+        "Inner London (Control)" = "steelblue",
+        "Outer London (Treated)" = "firebrick",
+        "Surrounding Districts"  = "darkgreen"
+    )) +
+    labs(
+        title    = "Company vs Private ULEV Share by Group",
+        x        = "Quarter",
+        y        = "Share of keepership-specific cars",
+        colour   = NULL,
+        linetype = "Keepership"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+
+library(patchwork)
+p1 / p2
+```
