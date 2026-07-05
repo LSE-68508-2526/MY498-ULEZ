@@ -6,13 +6,21 @@ date: today
 format:
     html:
         embed-resources: true
-        toc: false
+        toc: true
         number-sections: true
         fontsize: 12pt
 ---
-# Packages 
+# Setup
+This notebook constructs the analysis dataset used in all subsequent notebooks. It downloads raw data programmatically from official sources, cleans and reshapes each dataset, and assembles a balanced borough-level quarterly panel covering 2011 Q4 to 2024 Q4.
+All raw data downloaded to `data/raw` and processed outputs are saved to `data/processed/`. Neither folder is tracked by Git - the notebook is fully self-contained and reproducible from scratch.
+
+## Packages 
 Downloading and ensuring all required packages exist 
 ```{r}
+#| label: packages
+#| message: false
+#| warning: false
+
 required_packages <- c(
     # Data wrangling
     "tidyverse", # dplyr, tidyr, ggplot2, readr, purrr, stringr
@@ -21,22 +29,19 @@ required_packages <- c(
     "janitor", # clean_names(), tabyl()
     "lubridate", # date handling for quarterly periods
     "zoo", # yeargtr class for quarterly time series
-
     # Spatial / GIS
     "sf", # shape files, spatial joins, distance calc
     "units", # unit-aware distances (metres/km)
-
     # Econometrics 
     "fixest", #feols() - fast fixed effects with clustered SEs (Callaway-Sant'Anna)
     "did", # Callaway & Sant'Anna (2021) staggered DiD estimator
     "rdrobust", # RDD: MSE-optimal bandwidth, robust CIs
     "rddensity", # McCrary density test at the boundary
-
+    "tidysynth", # synthetic control
     # Output / tables
     "modelsummary", # regression tables
     "kableExtra", # formatted HTML/LaTeX tables
     "ggthemes", # clean plot themes
-
     # Utilities 
     "curl", # internet connectivity check 
     "here", # project-relative paths
@@ -64,9 +69,11 @@ invisible(lapply(required_packages, library, character.only = TRUE))
 message("All packages loaded successfully")
 ```
 
-# Directory Creation 
+## Paths & Download Helper
 
 ```{r}
+#| label: paths
+
 data <- here("data")
 raw <- here("data", "raw")
 Proc <- here('data', 'processed')
@@ -95,207 +102,16 @@ download_if_missing <- function(url, dest) {
 }
 ```
 
-# Data Cleaning 
+# Data Construction
+## Spatial Data
 
-## VEH0132: Licensed ULEVs by Local Authority Quarterly
-```{r}
-# =============================================
-# VEH0132 - Licensed ULEVs by local authority, quarterly 
-# Primary outcome variable 
-# ================================================
- veh0132 <- "https://assets.publishing.service.gov.uk/media/69ef35519ca985145673b9d7/veh0132.ods"
-
- download_if_missing(veh0132, file.path(raw, "veh0132.ods"))
-
- raw_ulev <- read_ods(
-    file.path(raw, "veh0132.ods"),
-    sheet = "VEH0132",
-    skip=4
- )
-```
+### London Borough Boundaries
+We load the London borough boundary shapefile from the London Datastore. The Shapefile uses the British National Grid project (EPSG: 27700) which gives distances in metres - essential for the running variable construction. We compute borough centroids as the representative point for each borough, used to measure distance to the ULEZ boundaries.
 
 ```{r}
- # quarter columns 
-qtr_cols_raw <- grep("^\\d{4} Q\\d$", names(raw_ulev), value = TRUE)
-message("Quarter columns found: ", length(qtr_cols_raw), " | ", tail(qtr_cols_raw, 1), " to ", qtr_cols_raw[1])
+#| label: borough-boundaries
+#| message: false
 
-raw_ulev <- clean_names(raw_ulev)
-
-qtr_cols <- grep("^x\\d{4}_q\\d$", names(raw_ulev), value = TRUE)
-
-# Filter to London boroughs and pivot to longer format
-
-raw_ulev <- raw_ulev |>
-    mutate(across(all_of(qtr_cols), as.character))
-
-ulev_long <- raw_ulev |>
-    filter(str_starts(ons_code, "E09")) |>
-    select(-units, -ons_sort) |>
-    pivot_longer(
-        cols = all_of(qtr_cols),
-        names_to = "quarter_raw",
-        values_to = "ulev_count"
-    ) |>
-    mutate(
-        year = as.integer(str_extract(quarter_raw, "\\d{4}")),
-        quarter = as.integer(str_extract(quarter_raw, "\\d$")),
-        yq = as.yearqtr(paste0(year, " Q", quarter)),
-        ulev_count = na_if(ulev_count, "[z]"),
-        ulev_count = na_if(ulev_count, '[x]'),
-        ulev_count = na_if(ulev_count, "[low]"),
-        ulev_count = na_if(ulev_count, ""),
-        ulev_count = as.numeric(str_remove_all(ulev_count, ","))
-    ) |>
-    select(ons_code, ons_geography, fuel, keepership, year, quarter, yq, ulev_count)
-
-# Aggregate to borough x quarter totals 
-ulev_total <- ulev_long |>
-    group_by(ons_code, ons_geography, year, quarter, yq) |>
-    summarise(
-        ulev_total = sum(ulev_count, na.rm = TRUE),
-        ulev_bev = sum(ulev_count[fuel == "BATTERY ELECTRIC"], na.rm = TRUE),
-        ulev_phev = sum(ulev_count[str_detect(fuel, "PLUG-IN")], na.rm = TRUE),
-        .groups = "drop"
-    )
-glimpse(ulev_total)
-```
-
-```{r}
-saveRDS(ulev_total, file.path(Proc, "ulev_total.rds"))
-message("Saved: ulev_total.rds")
-```
-
-## VEH0105: All Licensed Vehicled by Local Authority, Quarterly 
-
-```{r}
-# =============================================
-# VEH0105 : All licensed vehicles by local authority, quarterly 
-# Denominatory for ULEV compliance share 
-# ================================================
-veh0105 <- "https://assets.publishing.service.gov.uk/media/69ef3553ed93f72cf81633fc/veh0105.ods"
-
-download_if_missing(veh0105, file.path(raw, "veh0105.ods"))
-
-raw_veh <- read_ods(
-    file.path(raw, "veh0105.ods"),
-    sheet = "VEH0105",
-    skip = 4
-)
-
-names(raw_veh)[1:8]
-```
-
-```{r}
-qtr_cols_raw_veh <- grep("^\\d{4} Q\\d$", names(raw_veh), value = TRUE)
-message("Quarter columns found: ", length(qtr_cols_raw_veh), " | ", tail(qtr_cols_raw_veh, 1), " to ", qtr_cols_raw_veh[1])
-
-raw_veh <- clean_names(raw_veh)
-
-qtr_cols_veh <- grep("^x\\d{4}_q\\d$", names(raw_veh), value = TRUE)
-
-raw_veh <- raw_veh |>
-    mutate(across(all_of(qtr_cols_veh), as.character))
-
-# Filter to london boroughs
-cars_long <- raw_veh |>
-    filter(str_starts(ons_code, "E09"),
-        body_type == "Cars") |>
-    select(-units, -ons_sort) |>
-    pivot_longer(
-        cols = all_of(qtr_cols_veh),
-        names_to = "quarter_raw", 
-        values_to = "count_raw"
-    ) |>
-    mutate(
-        year = as.integer(str_extract(quarter_raw, "\\d{4}")),
-        quarter = as.integer(str_extract(quarter_raw, "\\d$")),
-        yq = as.yearqtr(paste0(year, " Q", quarter)),
-        count_raw = na_if(count_raw, "[z]"),
-        count_raw = na_if(count_raw, "[x]"),
-        count_raw = na_if(count_raw, "[low]"),
-        count_raw = na_if(count_raw, ""),
-        cars = as.numeric(str_remove_all(count_raw, ",")) * 1000
-    ) |>
-    select(ons_code, ons_geography, fuel, keepership, year, quarter, yq, cars)
-
-# Aggregate to borough x quarter total cars 
-cars_total <- cars_long |>
-    group_by(ons_code, ons_geography, year, quarter, yq) |>
-    summarise(
-        cars_total = sum(cars, na.rm=TRUE),
-        .groups = "drop"
-    )
-glimpse(cars_total)
-```
-
-```{r}
-saveRDS(cars_total, file.path(Proc, "cars_total.rds"))
-message("Saved: cars_total.rds")
-```
-
-## Compliance share 
-
-```{r}
-# ================================================
-# Compliance Share - merge ULEVs and total cars 
-# ================================================
-
-panel_compliance <- ulev_total |>
-    left_join(cars_total,
-        by = c("ons_code", "ons_geography", "year", "quarter", "yq")) |>
-    mutate(
-        ulev_share = ulev_total/cars_total,
-        post_announce = as.integer(yq >= as.yearqtr("2022 Q4")),
-        post_implement = as.integer(yq >= as.yearqtr("2023 Q3")),
-        anticipation_window = as.integer(
-            yq >= as.yearqtr("2022 Q4") & yq < as.yearqtr("2023 Q3")
-        ),
-        t_announce = (year - 2022) * 4 + (quarter - 4)
-    )
-
-    glimpse(panel_compliance)
-```
-
-```{r}
-saveRDS(panel_compliance, file.path(Proc, "panel_compliance.rds"))
-
-message("Saved: panel_compliance.rds")
-```
-
-```{r}
-# =========================================
-# Clean Environment 
-# =========================================
-rm(list = setdiff(ls(), c(
-    # Data 
-    "panel_compliance",
-    "ulev_total",
-    "cars_total",
-
-    # Paths
-    "raw",
-    "Proc",
-
-    # Helper function 
-    "download_if_missing",
-
-    # Package management
-    "required_packages",
-    "installed",
-    "to_install"
-)))
-
-gc()
-
-message("Objects retained: ", paste(ls(), collapse = ", "))
-```
-
-## Spatial Data 
-
-```{r}
-# =============================================
-# Spatial - London borough boundaries 
-# ============================================
 borough_spatial <- "https://data.london.gov.uk/download/20od9/9ba8c833-6370-4b11-abdc-314aa020d5e0/statistical-gis-boundaries-london.zip"
 
 download_if_missing(borough_spatial, file.path(raw, "london_boundaries.zip"))
@@ -333,12 +149,129 @@ centroids_sf <- boroughs_sf |>
 message("Boroughs loaded: ", nrow(boroughs_sf))
 ```
 
-```{r}
-# =========================================
-# ULEZ Boundaries 
-# ==========================================
+### Surrounding Districts - Never-Treated Control Units
+To strengthen identification for the 2023 expansion analysis, we include local authority districts that directly border Greater London as additional never-treated control units. These districts share the same commuter spillover exposure as outer London boroughs - their residents face ULEZ charges when driving into London - but were never subject to the policy expansion themselves.
+We identify bordering districts programmatically using spatial intersection with the Greater London boundary.
 
-# 2019 - original ULEZ zone (within Congestion charge zone)
+```{r}
+#| label: surrounding-districts
+#| message: false
+
+# Greater London boundary - union of all boroughs
+london_boundary <- boroughs_sf |> st_union()
+eng_path <- file.path(raw, "england_districts.geojson")
+
+# Download full England district boundaries from ONS ArcGIS API 
+# File is ~63MB - cached locally after first successful download
+# If download fails,the chunk falls back to a hardcoded list of bordering districts identified via spatial analysis on 2026-07-05
+if (!file.exists(eng_path)) {
+    message("Attempting to download England district boundaries...")
+    tryCatch({
+        library(httr2)
+        resp <- request(paste0(
+            "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/",
+            "Local_Authority_Districts_May_2024_Boundaries_UK_BFC/FeatureServer/0/query",
+            "?where=LAD24CD+LIKE+'E%25'",
+            "&outFields=LAD24CD,LAD24NM",
+            "&returnGeometry=true",
+            "&f=geojson"
+        )) |>
+            req_timeout(600) |>
+            req_retry(max_tries = 3, backoff = ~30) |>
+            req_perform()
+        writeBin(resp_body_raw(resp), eng_path)
+        message("Downloaded and cached: england_districts.geojson")
+    }, error = function(e) {
+        message("Download failed: ", conditionMessage(e))
+        message("Falling back to hardcoded district list.")
+    })
+}
+
+# Path 1. Load from cached full dataset and identify programmatically 
+if (file.exists(eng_path)) {
+    england_districts <- st_read(eng_path, quiet = TRUE)
+    surrounding_sf <- england_districts |>
+        filter(!LAD24CD %in% boroughs_sf$ons_code) |>
+        filter(lengths(st_is_within_distance(
+            geometry, london_boundary, dist = 2000)) > 0 ) |>
+        distinct(LAD24CD, .keep_all = TRUE) |>
+        rename(ons_code = LAD24CD, la_name = LAD24NM)
+    message("Surrounding districts identified programmatically: ", nrow(surrounding_sf))
+
+# Path 2: Fallback -targ
+} else {
+    message("Using targeted query for known bordering districts...")
+    surrounding_codes <- c(
+        "E07000068", # Brentwood
+        "E07000095", # Broxbourne
+        "E06000060",  # Buckinghamshire
+        "E07000107",  # Dartford
+        "E07000207",  # Elmbridge
+        "E07000072",  # Epping Forest
+        "E07000208",  # Epsom and Ewell
+        "E07000098",  # Hertsmere
+        "E07000210",  # Mole Valley
+        "E07000211",  # Reigate and Banstead
+        "E07000111",  # Sevenoaks
+        "E06000039",  # Slough
+        "E07000213",  # Spelthorne
+        "E07000215",  # Tandridge
+        "E07000102",  # Three Rivers
+        "E06000034",  # Thurrock
+        "E07000103",  # Watford
+        "E07000241",  # Welwyn Hatfield
+        "E06000040"   # Windsor and Maidenhead
+    )
+    surrounding_query <- paste0(
+        "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/",
+        "Local_Authority_Districts_May_2024_Boundaries_UK_BFC/FeatureServer/0/query",
+        "?where=LAD24CD+IN+(",
+        paste0("'", surrounding_codes, "'", collapse=","),
+        ")&outFields=LAD24CD,LAD24NM&returnGeometry=true&f=geojson"
+    )
+    download_if_missing(surrounding_query, file.path(raw, "surrounding_districts.geojson"))
+    surrounding_sf <- st_read(file.path(raw, "surrounding_districts.geojson"), quiet=TRUE) |>
+        st_transform(27700) |>
+        rename(ons_code = LAD24CD, la_name = LAD24NM)
+}
+
+saveRDS(surrounding_sf, file.path(Proc, "surrounding_sf.rds"))
+message("Saved: surrounding_sf.rds")
+
+study_codes <- c(as.character(boroughs_sf$ons_code), as.character(surrounding_sf$ons_code))
+message("Total study units: ", length(study_codes),
+" (", length(boroughs_sf$ons_code), " boroughs + ", length(surrounding_sf$ons_code), " surrounding districts)")
+```
+
+### ULEZ Boundaries 
+We download the three ULEZ expansion boundaries and compute signed distance running variables for all 52 study units. The signed distance is negative for units inside the zone and positive for units outside.
+
+```{r}
+#| label: ulez-boundaries-setup
+#| message: false
+
+study_sf <- bind_rows(
+    boroughs_sf |> select(ons_code, la_name, geometry),
+    surrounding_sf |> select(ons_code, la_name, geometry)
+)
+
+study_sf <- study_sf |>
+    mutate(
+        centroid = st_centroid(geometry),
+        centroid_x = st_coordinates(centroid)[,1],
+        centroid_y = st_coordinates(centroid)[,2]
+    )
+
+centroids_sf <- study_sf |>
+    st_drop_geometry() |>
+    st_as_sf(coords=c("centroid_x", "centroid_y"), crs = 27700)
+
+message("Study units with centroids: ", nrow(study_sf))
+```
+```{r}
+#| label: ulez-2019
+#| message: false
+
 boundary_2019 <- "https://data.london.gov.uk/download/v8onw/84a78e36-7c27-4ba0-868f-13a76e1b50cb/ULEZCentral_CongestionChargingZone.zip"
 
 download_if_missing(boundary_2019, file.path(raw, "ulez_2019.zip"))
@@ -349,10 +282,6 @@ if (!dir.exists(ulez_2019_dir)){
     message("Unzipped ulez_2019.")
 }
 
-list.files(ulez_2019_dir, recursive = TRUE)
-```
-
-```{r}
 ulez_2019 <- st_read(
     file.path(ulez_2019_dir, "Shapefile/UltraLowEmissionsZoneBoundary(ULEZ).shp")
 ) |>
@@ -365,22 +294,22 @@ ulez_2019_line <- st_cast(st_union(ulez_2019), "MULTILINESTRING")
 
 dist_2019 <- st_distance(centroids_sf, ulez_2019_line)
 
-boroughs_sf <- boroughs_sf |>
+study_sf <- study_sf |>
     mutate(
-        inside_2019 = as.integer(lengths(st_intersects(boroughs_sf, ulez_2019)) > 0
+        inside_2019 = as.integer(lengths(st_intersects(study_sf, ulez_2019)) > 0
         ),
         dist_to_2019_km = as.numeric(dist_2019[,1]) / 1000,
         rv_2019 = ifelse(inside_2019==1,
         -dist_to_2019_km, dist_to_2019_km)
     )
 
-message("Boroughs inside 2019 zone: ", sum(boroughs_sf$inside_2019))
+message("Boroughs inside 2019 zone: ", sum(study_sf$inside_2019))
 ```
 
 ```{r}
-# =============================================
-# ULEZ 2021 boundary - expanded to North/South Circular
-# ============================================
+#| label: ulez-2021
+#| message: false
+
 boundary_2021 <- "https://data.london.gov.uk/download/vdjx4/56a082c1-4626-4d6f-80fe-d7fa99d8fdd5/InnerUltraLowEmissionZone.zip"
 
 download_if_missing(boundary_2021, file.path(raw, "ulez_2021.zip"))
@@ -390,11 +319,7 @@ if (!dir.exists(ulez_2021_dir)) {
     unzip(file.path(raw, "ulez_2021.zip"), exdir = ulez_2021_dir)
     message("Unzipped ulez_2021.")
 }
- 
-list.files(ulez_2021_dir, recursive=TRUE)
-```
 
-```{r}
 ulez_2021 <- st_read(file.path(ulez_2021_dir, "InnerUltraLowEmissionZone.shp")) |>
     st_set_crs(27700) |>
     st_make_valid()
@@ -407,8 +332,8 @@ ulez_2021_line <- st_cast(st_union(ulez_2021), "MULTILINESTRING")
 # Distance from each borough centroid to the 2021 boundary line
 dist_2021 <- st_distance(centroids_sf, ulez_2021_line)
 
-# Add to boroughs_sf
-boroughs_sf <- boroughs_sf |>
+# Add to study_sf
+study_sf <- study_sf |>
     mutate(
         inside_2021 = as.integer(lengths(st_within(centroids_sf, ulez_2021)) > 0
         ),
@@ -417,24 +342,21 @@ boroughs_sf <- boroughs_sf |>
         -dist_to_2021_km, dist_to_2021_km)
     )
 
-message("Boroughs inside 2021 zone: ", sum(boroughs_sf$inside_2021))
+message("Boroughs inside 2021 zone: ", sum(study_sf$inside_2021))
 ```
 
 ```{r}
-# ========================================
-# ULEZ 2023 Boundary
-# ========================================
+#| label: ulez-2023
+#| message: false
+
 download_if_missing("https://data.london.gov.uk/download/vd455/2e43ce0a-5ae3-41cb-be60-e33b662f5470/londonWideUltraLowEmissionZone.zip", file.path(raw, "ulez_2023.zip")
 )
 
 ulez_2023_dir <- file.path(raw, "ulez_2023")
-
 if (!dir.exists(ulez_2023_dir)) {
     unzip(file.path(raw,"ulez_2023.zip"), exdir = ulez_2023_dir)
     message("Unzipped ulez_2023.")
 }
-
-list.files(ulez_2023_dir, recursive = TRUE)
 ```
 
 ```{r}
@@ -444,65 +366,286 @@ ulez_2023 <- st_read(file.path(ulez_2023_dir, "londonWideUltraLowEmissionZone.sh
 
 ulez_2023_line <- st_cast(st_union(ulez_2023), "MULTILINESTRING")
 
-dist_2023 <- st_distance(centroids_sf, ulez_2023_line)
+dist_2023 <- st_distance(study_sf, ulez_2023_line)
 
-boroughs_sf <- boroughs_sf |>
+study_sf <- study_sf |>
     mutate(
         dist_to_2023_km = as.numeric(dist_2023[,1]) / 1000,
         rv_2023 = ifelse(
             lengths(st_within(centroids_sf, ulez_2023)) > 0,
             -dist_to_2023_km, dist_to_2023_km
-        )
-    )
-```
-
-```{r}
-boroughs_sf <- boroughs_sf |>
-    mutate(
+        ),
         treated = as.integer(rv_2021 > 0)
     )
+
+message("Treated boroughs (2023 expansion): ", sum(study_sf$treated))
+message("Control borough (inside 2021 zone): ", sum(study_sf$treated==0))
 ```
 
 ```{r}
-# ===============================================
-# Clean environment
-# ===============================================
+saveRDS(study_sf, file.path(Proc, "study_sf.rds"))
+message("Saved: study_sf.rds — ", nrow(study_sf), " units")
+```
+
+
+```{r}
+#| label: clean-spatial
+#| message: false
 
 rm(list = setdiff(ls(), c(
-    # Data 
-    "panel_compliance",
-    "boroughs_sf",
-    "centroids_sf",
-
-    # Paths 
-    "raw",
-    "Proc",
-    "data",
-
-    # Helper function 
-    "download_if_missing"
+    # Data
+    "study_sf",
+    "surrounding_sf",
+    "study_codes",
+    
+    "ulez_2019", "ulez_2021", "ulez_2023",
+    # Paths
+    "raw", "Proc",
+    
+    # Helper function
+    "download_if_missing",
+    
+    # Package management
+    "required_packages", "installed", "to_install"
 )))
 
 gc()
 message("Objects retained: ", paste(ls(), collapse = ", "))
-
 ```
 
-## Control Variables
+## ULEV Compliance Share
+
+### VEH0132 - Licensed ULEVs by Local Authority, Quarterly
+
+VEH0132 is the primary outcome variable. It records the number of licensed ultra low emission vehicles by local authority, fuel type, and keepership on a quarterly basis. We filter to all 52 study units (33 London boroughs + 19 surrounding districts), pivot from wide to long format, and aggregate across fuel types and keepership to produce total ULEV counts per unit per quarter.
+
+We retain disaggregated counts by fuel types (BEV vs PHEV) and keepership (company vs private) to enable heterogeneity analysis in subsequent notebooks. BEV adoption is a stronger signal of anticipatory compliance than PHEV since it requires full commitment to electric-only driving. Company fleet compliance may differ from private given that the fleet replacement cycles are planned in advance.
 
 ```{r}
-# ===================================================
-# ONS Census 2021 - Car/van availability (TS045)
-# Source: Nomis API - NM_2063_1
-# Cross-sectional control for baseline vehicle ownership
-# ==============================================
+#| label: veh0132
+#| message: false
 
+ veh0132 <- "https://assets.publishing.service.gov.uk/media/69ef35519ca985145673b9d7/veh0132.ods"
+
+ download_if_missing(veh0132, file.path(raw, "veh0132.ods"))
+
+ raw_ulev <- read_ods(
+    file.path(raw, "veh0132.ods"),
+    sheet = "VEH0132",
+    skip=4
+ )
+```
+
+```{r}
+raw_ulev <- clean_names(raw_ulev)
+
+# Identify quarter columns - named "x2025_q4" etc after clean_names()
+qtr_cols <- grep("^x\\d{4}_q\\d$", names(raw_ulev), value=TRUE)
+message("Quarter columns found: ", length(qtr_cols), " | ", tail(qtr_cols, 1), " to ", qtr_cols[1])
+
+raw_ulev <- raw_ulev |>
+    mutate(across(all_of(qtr_cols), as.character))
+
+# Filter to London boroughs, pivot to long and clean counts 
+ulev_long <- raw_ulev |>
+    filter(ons_code %in% study_codes) |>
+    filter(fuel != "Total", keepership != "Total") |>
+    select(-units, -ons_sort) |>
+    pivot_longer(
+        cols = all_of(qtr_cols),
+        names_to = "quarter_raw",
+        values_to = "ulev_count"
+    ) |>
+    mutate(
+        year = as.integer(str_extract(quarter_raw, "\\d{4}")),
+        quarter = as.integer(str_extract(quarter_raw, "\\d$")),
+        yq = as.yearqtr(paste0(year, " Q", quarter)),
+        ulev_count = case_when(
+            ulev_count %in% c("[z]", "[x]", "[low]", "") ~ NA_character_,
+            TRUE ~ ulev_count),
+        ulev_count = as.numeric(str_remove_all(ulev_count, ","))
+        ) |>
+    select(ons_code, ons_geography, fuel, keepership, year, quarter, yq, ulev_count)
+```
+
+```{r}
+ulev_total <- ulev_long |>
+    group_by(ons_code, ons_geography, year, quarter, yq) |>
+    summarise(
+        ulev_total   = sum(ulev_count,                                    na.rm = TRUE),
+        ulev_bev     = sum(ulev_count[fuel == "BATTERY ELECTRIC"],        na.rm = TRUE),
+        ulev_phev    = sum(ulev_count[str_detect(fuel, "PLUG-IN")],       na.rm = TRUE),
+        ulev_company = sum(ulev_count[keepership == "COMPANY"],           na.rm = TRUE),
+        ulev_private = sum(ulev_count[keepership == "PRIVATE"],           na.rm = TRUE),
+        .groups      = "drop"
+    )
+
+glimpse(ulev_total)
+```
+
+```{r}
+saveRDS(ulev_total, file.path(Proc, "ulev_total.rds"))
+message("Saved: ulev_total.rds — ", nrow(ulev_total), " rows | ",
+        n_distinct(ulev_total$ons_code), " study units")
+```
+
+### VEH0105: All Licensed Vehicle by Local Authority, Quarterly 
+
+VEH0105 provides the denominator for our primary outcome variable. It records the total number of licensed vehicles by local authority, body type, fuel type, and keepership on a quarterly basis. We filter to cars only and to all 52 study units, then aggregate to unit-quarter total car counts. Note that VEH0105 reports counts in thousands — we multiply by 1,000 to convert to actual vehicle counts for consistency with VEH0132.
+
+```{r}
+#| label: veh0105 - clean
+#| message: false
+
+veh0105 <- "https://assets.publishing.service.gov.uk/media/69ef3553ed93f72cf81633fc/veh0105.ods"
+
+download_if_missing(veh0105, file.path(raw, "veh0105.ods"))
+
+raw_veh <- read_ods(
+    file.path(raw, "veh0105.ods"),
+    sheet = "VEH0105",
+    skip = 4
+)
+```
+
+```{r}
+qtr_cols_raw_veh <- grep("^\\d{4} Q\\d$", names(raw_veh), value = TRUE)
+message("Quarter columns found: ", length(qtr_cols_raw_veh), " | ", tail(qtr_cols_raw_veh, 1), " to ", qtr_cols_raw_veh[1])
+
+raw_veh <- clean_names(raw_veh)
+
+qtr_cols_veh <- grep("^x\\d{4}_q\\d$", names(raw_veh), value = TRUE)
+
+raw_veh <- raw_veh |>
+    mutate(across(all_of(qtr_cols_veh), as.character))
+```
+```{r}
+#| label: veh0105-clean
+#| message: false
+
+# Filter to london boroughs
+cars_long <- raw_veh |>
+    filter(ons_code %in% study_codes,
+        body_type == "Cars",
+        fuel != "Total",
+        keepership != "Total") |>
+    select(-units, -ons_sort) |>
+    pivot_longer(
+        cols = all_of(qtr_cols_veh),
+        names_to = "quarter_raw", 
+        values_to = "count_raw"
+    ) |>
+    mutate(
+        year = as.integer(str_extract(quarter_raw, "\\d{4}")),
+        quarter = as.integer(str_extract(quarter_raw, "\\d$")),
+        yq = as.yearqtr(paste0(year, " Q", quarter)),
+        count_raw = case_when(
+            count_raw %in% c("[z]", "[x]", "[low]", "") ~ NA_character_,
+            TRUE ~ count_raw
+        ),
+        cars = as.numeric(str_remove_all(count_raw, ",")) * 1000
+    ) |>
+    select(ons_code, ons_geography, fuel, keepership, year, quarter, yq, cars)
+
+# Aggregate to borough x quarter total cars 
+cars_total <- cars_long |>
+    group_by(ons_code, ons_geography, year, quarter, yq) |>
+    summarise(
+        cars_total = sum(cars, na.rm=TRUE),
+        cars_company = sum(cars[keepership == "COMPANY"], na.rm = TRUE),
+        cars_private = sum(cars[keepership == "PRIVATE"], na.rm = TRUE),
+        .groups = "drop"
+    )
+glimpse(cars_total)
+```
+
+```{r}
+saveRDS(cars_total, file.path(Proc, "cars_total.rds"))
+message("Saved: cars_total.rds — ", nrow(cars_total), " rows | ",
+        n_distinct(cars_total$ons_code), " study units")
+```
+
+### Compliance share 
+The compliance share is the primary outcome variable - the proportion of licensed cars in each study unit that are ultra low emission vehicles. We merge `ulev_total` and `cars_total` on borough and quarter, compute the compliance share and disaggregated shares by fuel type and keepership, and add time indicators for the announcement and implementation dates.
+
+```{r}
+#| label: compliance-share
+#| message: false
+
+panel_compliance <- ulev_total |>
+    left_join(cars_total,
+        by = c("ons_code", "ons_geography", "year", "quarter", "yq")) |>
+    mutate(
+        ulev_share = ulev_total/cars_total,
+        bev_share = ulev_bev / cars_total,
+        phev_share = ulev_phev / cars_total,
+        company_share = ulev_company / cars_company,
+        private_share = ulev_private / cars_private,
+        post_announce = as.integer(yq >= as.yearqtr("2022 Q4")),
+        post_implement = as.integer(yq >= as.yearqtr("2023 Q3")),
+        anticipation_window = as.integer(yq >= as.yearqtr("2022 Q4") & yq < as.yearqtr("2023 Q3")),
+        t_announce = (year - 2022) * 4 + (quarter - 4)
+    )
+
+glimpse(panel_compliance)
+```
+
+```{r}
+saveRDS(panel_compliance, file.path(Proc, "panel_compliance.rds"))
+
+message("Saved: panel_compliance.rds — ", nrow(panel_compliance), " rows | ",
+        n_distinct(panel_compliance$ons_code), " study units")
+```
+
+```{r}
+# =========================================
+# Clean Environment 
+# =========================================
+rm(list = setdiff(ls(), c(
+    # Data 
+    "panel_compliance",
+    "study_sf",
+    "surrounding_sf",
+    "study_codes",
+    "ulev_total",
+    "cars_total",
+    "ulez_2019",
+    "ulez_2021",
+    "ulez_2023",
+    # Paths
+    "raw",
+    "Proc",
+    # Helper function 
+    "download_if_missing",
+    # Package management
+    "required_packages",
+    "installed",
+    "to_install"
+)))
+
+gc()
+
+message("Objects retained: ", paste(ls(), collapse = ", "))
+```
+
+
+## Control Variables
+### Car/Van Availability (TS045)
+
+Car ownership is a key cross-sectional control - study units with higher baseline car ownership are more likely to have residents who need to comply with ULEZ. We download Census 2021 TS045 from the Nomis API, which provides household counts by number of cars or vans available.
+
+```{r}
+#| label: car-availability
+#| message: false
+
+# T045 - car/van availability by local authority
+# NM_2063_1, categories 1-4 (excluding total), counts
 car_avail_raw <- nomis_get_data(
-    id = "NM_2063_1", # TS045 car/van availability 
-    time = "latest", # 2021 Census
-    geography = "TYPE424", # local authority district / unitary 
-    C2021_CARS_5 = "1,2,3,4", # all categories except total 
-    measures = 20100, # counts
+    id = "NM_2063_1", 
+    time = "latest",
+    geography = "TYPE424",
+    C2021_CARS_5 = "1,2,3,4",
+    measures = 20100,
     select = c("GEOGRAPHY_NAME", "GEOGRAPHY_CODE", "C2021_CARS_5_NAME", "OBS_VALUE")
 )
 ```
@@ -510,7 +653,7 @@ car_avail_raw <- nomis_get_data(
 ```{r}
 car_avail <- car_avail_raw |>
     clean_names() |>
-    filter(str_starts(geography_code, "E09")) |>
+    filter(geography_code %in% study_codes) |>
     pivot_wider(
         names_from = c2021_cars_5_name,
         values_from = obs_value
@@ -535,24 +678,18 @@ glimpse(car_avail)
 
 ```{r}
 saveRDS(car_avail, file.path(Proc, "car_avail.rds"))
-message("Saved: car_avail.rds")
+message("Saved: car_avail.rds — ", nrow(car_avail), " rows")
 ```
 
+### Household Deprivation (TS011)
+Deprivation is a cross-sectional control for socioeconomic status. We download Census 2021 TS011 from the Nomis API, which provides household counts by number of deprivation dimensions (0-4).
+
 ```{r}
-# =============================================
-# ONS Census 2021 - Household deprivation (TS011)
-# Source: Nomis API
-# Cross-sectional control for socioeconomic status
-# ===================================================
+#| label: deprivation
+#| message: false
 
-# Find the correct dataset ID
-ts011_search <- nomis_search(name = "*TS011*")
-print(ts011_search[, c("id", "name.value")])
-
-# checking dimensions
-nomis_get_metadata("NM_2031_1")
-nomis_get_metadata("NM_2031_1", "C2021_DEP_6")
-
+# TS011 - Household deprivation by local authority 
+# NM_2031_1, categories 1-5 (excluding total), counts
 deprivation_raw <- nomis_get_data(
     id = "NM_2031_1",
     time = "latest",
@@ -561,13 +698,10 @@ deprivation_raw <- nomis_get_data(
     measures = 20100,
     select = c("GEOGRAPHY_NAME", "GEOGRAPHY_CODE", "C2021_DEP_6_NAME", "OBS_VALUE")
 )
-```
 
-```{r}
-# Clean and filter to London boroughs
 deprivation <- deprivation_raw |>
     clean_names() |>
-    filter(str_starts(geography_code, "E09")) |>
+    filter(geography_code %in% study_codes) |>
     pivot_wider(
         names_from  = c2021_dep_6_name,
         values_from = obs_value
@@ -596,9 +730,12 @@ deprivation <- deprivation_raw |>
     ) |>
     select(ons_code, la_name, pct_deprived, deprivation_index)
 
-saveRDS(deprivation, file.path(Proc, "deprivation.rds"))
-
 glimpse(deprivation)
+```
+
+```{r}
+saveRDS(deprivation, file.path(Proc, "deprivation.rds"))
+message("Saved: deprivation.rds — ", nrow(deprivation), " rows")
 ```
 
 ```{r}
@@ -606,12 +743,12 @@ saveRDS(deprivation, file.path(Proc, "deprivation.rds"))
 message("Saved: deprivation.rds")
 ```
 
+### Population Density (TS006)
+Population density is a cross-sectional control for urban density. We download Census 2021 TS006 from the Nomis API.
+
 ```{r}
-# ============================================== 
-# ONS Census 2021 - Population density (TS006) 
-# Source: Nomis API 
-# Cross-sectional control for urban density
-# ===============================================
+#| label: pop-density
+#| message: false
 
 pop_density_raw <- nomis_get_data(
     id        = "NM_2026_1",
@@ -621,24 +758,32 @@ pop_density_raw <- nomis_get_data(
 )
 pop_density <- pop_density_raw |>
     clean_names() |>
-    filter(str_starts(geography_code, "E09")) |>
+    filter(geography_code %in% study_codes) |>
     rename(
         ons_code = geography_code,
         la_name = geography_name,
         pop_density_per_km2 = obs_value
     ) |>
     select(ons_code, la_name, pop_density_per_km2)
-
-saveRDS(pop_density, file.path(Proc, "pop_density.rds"))
-
 glimpse(pop_density)
 ```
 
 ```{r}
-# ============================================
-# ASHE - Median annual earning by local authority (time-varying)
-# Source: Nomis API
-# ==============================================
+saveRDS(pop_density, file.path(Proc, "pop_density.rds"))
+message("Saved: pop_density.rds — ", nrow(pop_density), " rows")
+```
+
+### Median Annual Earnings (ASHE)
+
+Median annual earnings is a time-varying control for income levels. We download the Annual Survey of Hours and Earnings (ASHE) resident analysis from the Nomis API for 2011-2024, covering our full study period.
+
+```{r}
+#| label: ashe-earnings
+#| message: false
+
+# ASHE — Median annual gross pay by local authority, 2011-2024
+# NM_30_1, total sex (7), median (2), annual gross pay (7)
+# Downloaded year by year to avoid URL length limits
 
 ashe_raw <- map_dfr(2011:2024, function(yr) {
     nomis_get_data(
@@ -652,13 +797,9 @@ ashe_raw <- map_dfr(2011:2024, function(yr) {
     )
 })
 
-glimpse(ashe_raw[, c("DATE", "GEOGRAPHY_NAME", "GEOGRAPHY_CODE", "OBS_VALUE")])
-```
-
-```{r}
 ashe <- ashe_raw |>
     clean_names() |>
-    filter(str_starts(geography_code, "E09")) |>
+    filter(geography_code %in% study_codes) |>
     rename(
         ons_code = geography_code, 
         la_name = geography_name,
@@ -672,14 +813,18 @@ glimpse(ashe)
 
 ```{r}
 saveRDS(ashe, file.path(Proc, "ashe_earnings.rds"))
+message("Saved: ashe_earnings.rds — ", nrow(ashe), " rows | ",
+        n_distinct(ashe$ons_code), " study units")
 ```
 
+### House Prices (HMLR UK HPI)
+Average house prices are a time-varying control for neighbourhood wealth. We download the Land Registry UK House Price Index which provides monthly average prices by local authority back to 1968. We aggregate to quarterly by taking the last month of each quarter.
+
 ```{r}
-# =============================================================================
-# House prices — HMLR UK House Price Index (Average prices)
-# Source: Land Registry public data
-# Monthly average prices by local authority, back to 1968
-# =============================================================================
+#| label: house-prices
+#| message: false
+
+# HMLR UK HPI — Average prices by local authority, monthly
 
 download_if_missing(
     "https://publicdata.landregistry.gov.uk/market-trend-data/house-price-index-data/Average-prices-2026-04.csv",
@@ -691,13 +836,9 @@ hpi_raw <- read_csv(
     show_col_types = FALSE
 )
 
-glimpse(hpi_raw)
-```
-
-```{r}
 hpi <- hpi_raw |>
     clean_names()|>
-    filter(str_starts(area_code, "E09")) |>
+    filter(area_code %in% study_codes) |>
     mutate(
         year = year(date),
         month = month(date),
@@ -724,47 +865,64 @@ glimpse(hpi)
 
 ```{r}
 saveRDS(hpi, file.path(Proc, "house_prices.rds"))
+message("Saved: house_prices.rds — ", nrow(hpi), " rows | ",
+        n_distinct(hpi$ons_code), " study units")
 ```
 
 ```{r}
-# ===============================================
-# Clean environment 
-# ===============================================
+#| label: clean-3
+#| message: false
 
 rm(list = setdiff(ls(), c(
-    # Core data 
+    # Data
     "panel_compliance",
-    "boroughs_sf",
-
+    "study_sf",
+    "surrounding_sf",
+    "study_codes",
+    
     # Controls
     "car_avail",
     "deprivation",
     "pop_density",
     "ashe",
     "hpi",
-
+    
+    # ULEZ boundaries for plotting
+    "ulez_2019",
+    "ulez_2021",
+    "ulez_2023",
+    
     # Paths
-    "raw",
-    "Proc",
-
-    # Helper
-    "download_if_missing"
+    "raw", "Proc",
+    
+    # Helper function
+    "download_if_missing",
+    
+    # Package management
+    "required_packages", "installed", "to_install"
 )))
 
 gc()
-message("Objects retained: ", paste(ls(), collapse =", "))
+message("Objects retained: ", paste(ls(), collapse = ", "))
 ```
 
 ## Final Panel assembly 
 
 ```{r}
-# ==================================================
-# Final panel assembly
-# ==================================================
+#| label: panel-assembly
+#| message: false
 
-# Extract spatial variables from boroughs_sf (keep geometry)
-borough_vars <- boroughs_sf |>
-    select(ons_code, treated, rv_2019, rv_2021, rv_2023,
+study_sf <- study_sf |>
+    mutate(
+        london = as.integer(str_starts(ons_code, "E09"))
+    )
+
+message("London boroughs: ", sum(study_sf$london == 1))
+message("Surrounding districts: ", sum(study_sf$london == 0))
+
+# Extract spatial variables from study_sf
+study_vars <- study_sf |>
+    select(ons_code, treated, london, rv_2019, rv_2021, rv_2023,
            dist_to_2019_km, dist_to_2021_km, dist_to_2023_km,
            centroid_x, centroid_y, geometry)
 
@@ -772,24 +930,26 @@ borough_vars <- boroughs_sf |>
 
 analysis_panel <- panel_compliance |>
     rename(la_name = ons_geography) |>
-    left_join(borough_vars |> st_drop_geometry(), by = "ons_code") |>
+    left_join(study_vars |> st_drop_geometry(), by = "ons_code") |>
     left_join(car_avail,   by = c("ons_code", "la_name")) |>
     left_join(deprivation, by = c("ons_code", "la_name")) |>
     left_join(pop_density, by = c("ons_code", "la_name")) |>
-    left_join(ashe, by = c("ons_code", "la_name", "year")) |>
-    # HPI joined on ons_code + year + quarter only — avoids name mismatch
+    left_join(ashe,        by = c("ons_code", "la_name", "year")) |>
     left_join(
         hpi |> select(-la_name),
         by = c("ons_code", "year", "quarter", "yq")
     ) |>
-    left_join(borough_vars |> select(ons_code, geometry), by = "ons_code") |>
-    st_as_sf()
-
-analysis_panel <- analysis_panel |>
+    left_join(study_vars |> select(ons_code, geometry), by = "ons_code") |>
+    st_as_sf() |>
     filter(yq <= as.yearqtr("2024 Q4"))
 
-message("Trimmed panel: ", nrow(analysis_panel), " rows")
+message("Panel rows: ", nrow(analysis_panel))
+message("Study units: ", n_distinct(analysis_panel$ons_code))
 message("Time range: ", min(analysis_panel$yq), " to ", max(analysis_panel$yq))
+
+saveRDS(analysis_panel, file.path(Proc, "analysis_panel.rds"))
+message("Saved: analysis_panel.rds — ", nrow(analysis_panel), " rows, ",
+        ncol(analysis_panel), " columns")
 ```
 
 ```{r}
@@ -798,35 +958,38 @@ message("Saved: analysis_panel.rds — ", nrow(analysis_panel), " rows, ",
         ncol(analysis_panel), " columns")
 ```
 
-# Final Quality Checks 
+## Final Quality Checks 
 
 ```{r}
-# ===================================================
-# Final quality checks
-# ===================================================
+#| label: quality-checks
+#| message: false
 
-# 1. Check panel is balanced
+# 1. Balanced panel check
 panel_balance <- analysis_panel |>
     st_drop_geometry() |>
     group_by(ons_code) |>
     summarise(n_quarters = n(), .groups = "drop")
 
 message("Balanced panel check:")
-message("  Min quarters per borough: ", min(panel_balance$n_quarters))
-message("  Max quarters per borough: ", max(panel_balance$n_quarters))
+message("  Min quarters per unit: ", min(panel_balance$n_quarters))
+message("  Max quarters per unit: ", max(panel_balance$n_quarters))
 
-# 2. Check treatment split
+# 2. Treatment split
 message("\nTreatment split:")
-message("  Treated (outer) boroughs: ",   sum(boroughs_sf$treated == 1))
-message("  Control (inner) boroughs: ",   sum(boroughs_sf$treated == 0))
+message("  London boroughs — treated (outer): ",
+        sum(study_sf$treated == 1 & study_sf$london == 1))
+message("  London boroughs — control (inner): ",
+        sum(study_sf$treated == 0 & study_sf$london == 1))
+message("  Surrounding districts (never-treated): ",
+        sum(study_sf$london == 0))
 
-# 3. Check NAs in key variables
+# 3. NAs in key variables
 message("\nNAs in key variables:")
-message("  ulev_share: ",          sum(is.na(analysis_panel$ulev_share)))
-message("  house_price: ",         sum(is.na(analysis_panel$house_price)))
+message("  ulev_share:          ", sum(is.na(analysis_panel$ulev_share)))
+message("  house_price:         ", sum(is.na(analysis_panel$house_price)))
 message("  median_earnings_gbp: ", sum(is.na(analysis_panel$median_earnings_gbp)))
-message("  rv_2021: ",             sum(is.na(analysis_panel$rv_2021)))
+message("  rv_2021:             ", sum(is.na(analysis_panel$rv_2021)))
 
-# 4. Check time range
+# 4. Time range
 message("\nTime range: ", min(analysis_panel$yq), " to ", max(analysis_panel$yq))
 ```
