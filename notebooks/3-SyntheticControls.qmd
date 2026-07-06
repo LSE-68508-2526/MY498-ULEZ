@@ -1,0 +1,826 @@
+---
+title: "3. Synthetic Control Analysis"
+subtitle: "MY498: Capstone Project 2025-26"
+author: "68508"
+date: today
+format:
+    html:
+        embed-resources: true
+        toc: true
+        number-sections: true
+        fontsize: 12pt
+---
+```{r}
+#| label: setup
+#| message: false
+
+library(tidyverse)
+library(zoo)
+library(sf)
+library(here)
+library(tidysynth)
+library(patchwork)
+library(kableExtra)
+
+Proc <- here("data", "processed")
+raw  <- here("data", "raw")
+
+analysis_panel <- readRDS(file.path(Proc, "analysis_panel.rds"))
+study_sf       <- readRDS(file.path(Proc, "study_sf.rds"))
+
+study_sf <- study_sf |>
+    mutate(london = as.integer(str_starts(ons_code, "E09")))
+
+message("Panel loaded: ", nrow(analysis_panel), " rows | ",
+        n_distinct(analysis_panel$ons_code), " study units")
+```
+
+```{r}
+#| label: setup-2019
+#| message: false
+
+# 2019 expansion
+# Treated: boroughs inside the 2019 CCZ zone (rv_2019 < 0, london == 1)
+# Donor pool: outer London boroughs + surrounding districts
+
+panel_synth <- analysis_panel |>
+    st_drop_geometry() |>
+    mutate(time_num = year + (quarter - 1) / 4)
+
+treated_2019 <- panel_synth |>
+    filter(london == 1, rv_2019 < 0) |>
+    distinct(ons_code, la_name) |>
+    pull(la_name)
+
+donor_2019 <- panel_synth |>
+    filter(rv_2019 > 0 | london == 0) |>
+    distinct(ons_code, la_name) |>
+    pull(la_name)
+
+message("Treated units (2019): ", length(treated_2019))
+message("Donor pool (2019): ", length(donor_2019))
+print(treated_2019)
+```
+
+```{r}
+#| label: synth-2019
+#| message: false
+
+# Filter panel to 2019 expansion window
+# Announcement: ~2017 Q1, Implementation: 2019 Q2
+# Window: 2011 Q4 to 2021 Q3 (before 2021 expansion)
+panel_2019 <- panel_synth |>
+    filter(yq <= as.yearqtr("2021 Q3")) |>
+    filter(la_name %in% c(treated_2019, donor_2019))
+
+# Function to run synthetic control for a single unit
+run_synth_2019 <- function(borough) {
+    data_filtered <- panel_2019 |>
+        filter(la_name %in% donor_2019 | la_name == borough)
+    
+    tryCatch(
+        data_filtered |>
+            synthetic_control(
+                outcome           = ulev_share,
+                unit              = la_name,
+                time              = time_num,
+                i_unit            = borough,
+                i_time            = 2017.0,
+                generate_placebos = TRUE
+            ) |>
+            generate_predictor(
+                time_window   = 2014.0:2017.0,
+                mean_ulev_pre = mean(ulev_share)
+            ) |>
+            generate_predictor(
+                time_window = 2016.75,
+                ulev_pre    = ulev_share
+            ) |>
+            generate_weights(optimization_window = 2014.0:2017.0) |>
+            generate_control(),
+        error = function(e) {
+            message("Failed for ", borough, ": ", conditionMessage(e))
+            NULL
+        }
+    )
+}
+
+synth_2019_list <- map(treated_2019, run_synth_2019)
+names(synth_2019_list) <- treated_2019
+
+map_chr(synth_2019_list, ~ if (is.null(.x)) "FAILED" else "OK")
+```
+
+```{r}
+#| label: sig-2019
+#| message: false
+
+sig_2019 <- map_dfr(
+    names(synth_2019_list),
+    ~ synth_2019_list[[.x]] |>
+        grab_significance() |>
+        filter(unit_name == .x) |>
+        mutate(borough = .x)
+)
+
+sig_2019 |>
+    select(borough, rank, mspe_ratio, fishers_exact_pvalue) |>
+    arrange(rank) |>
+    kable(
+        digits  = 3,
+        caption = "Synthetic Control Results — 2019 ULEZ Expansion",
+        col.names = c("Borough", "Rank", "MSPE Ratio", "p-value")
+    ) |>
+    kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+```{r}
+#| label: plot-2019-all-updated
+#| message: false
+
+plots_2019_all <- map2(
+    synth_2019_list,
+    names(synth_2019_list),
+    ~ .x |>
+        plot_trends() +
+        geom_vline(xintercept = 2017.0,
+                   linetype = "dashed", colour = "black", linewidth = 0.6) +
+        geom_vline(xintercept = 2019.25,
+                   linetype = "dashed", colour = "red", linewidth = 0.6) +
+        annotate("text", x = 2017.0, y = Inf,
+                 vjust = 1.5, hjust = -0.1, size = 2, colour = "black",
+                 label = "Ann.") +
+        annotate("text", x = 2019.25, y = Inf,
+                 vjust = 1.5, hjust = -0.1, size = 2, colour = "red",
+                 label = "Imp.") +
+        labs(
+            title = .y,
+            x     = NULL,
+            y     = "ULEV share"
+        ) +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 8))
+)
+
+wrap_plots(plots_2019_all, ncol = 2)
+```
+
+```{r}
+#| label: plot-tower-hamlets
+#| message: false
+
+p_trends <- synth_2019_list[["Tower Hamlets"]] |>
+    plot_trends() +
+    geom_vline(xintercept = 2017.0, linetype = "dashed", colour = "red") +
+    labs(
+        title    = "Synthetic Control: Tower Hamlets — 2019 ULEZ Expansion",
+        subtitle = "Actual vs synthetic ULEV compliance share",
+        x        = "Quarter", y = "ULEV share"
+    ) +
+    theme_minimal()
+
+p_placebo <- synth_2019_list[["Tower Hamlets"]] |>
+    plot_placebos() +
+    geom_vline(xintercept = 2017.0, linetype = "dashed", colour = "red") +
+    labs(
+        title = "Placebo Test: Tower Hamlets — 2019 ULEZ Expansion",
+        x     = "Quarter", y = "Gap in ULEV share"
+    ) +
+    theme_minimal()
+
+p_trends / p_placebo
+```
+
+```{r}
+#| label: setup-2021
+#| message: false
+
+# 2021 expansion
+# Treated: boroughs inside 2021 zone but outside 2019 zone
+# Donor pool: outer London boroughs + surrounding districts
+
+treated_2021 <- panel_synth |>
+    filter(london == 1, rv_2021 < 0, rv_2019 > 0) |>
+    distinct(ons_code, la_name) |>
+    pull(la_name)
+
+donor_2021 <- panel_synth |>
+    filter(rv_2021 > 0 | london == 0) |>
+    distinct(ons_code, la_name) |>
+    pull(la_name)
+
+message("Treated units (2021): ", length(treated_2021))
+message("Donor pool (2021): ", length(donor_2021))
+print(treated_2021)
+```
+
+```{r}
+#| label: synth-2021
+#| message: false
+
+# Filter panel to 2021 expansion window
+# Announcement: ~2019 Q2, Implementation: 2021 Q4
+# Window: 2011 Q4 to 2023 Q2 (before 2023 expansion)
+panel_2021 <- panel_synth |>
+    filter(yq <= as.yearqtr("2023 Q2")) |>
+    filter(la_name %in% c(treated_2021, donor_2021))
+
+run_synth_2021 <- function(borough) {
+    data_filtered <- panel_2021 |>
+        filter(la_name %in% donor_2021 | la_name == borough)
+    
+    tryCatch(
+        data_filtered |>
+            synthetic_control(
+                outcome           = ulev_share,
+                unit              = la_name,
+                time              = time_num,
+                i_unit            = borough,
+                i_time            = 2019.25,
+                generate_placebos = TRUE
+            ) |>
+            generate_predictor(
+                time_window   = 2016.0:2019.25,
+                mean_ulev_pre = mean(ulev_share)
+            ) |>
+            generate_predictor(
+                time_window = 2019.0,
+                ulev_pre    = ulev_share
+            ) |>
+            generate_weights(optimization_window = 2016.0:2019.25) |>
+            generate_control(),
+        error = function(e) {
+            message("Failed for ", borough, ": ", conditionMessage(e))
+            NULL
+        }
+    )
+}
+
+synth_2021_list <- map(treated_2021, run_synth_2021)
+names(synth_2021_list) <- treated_2021
+
+map_chr(synth_2021_list, ~ if (is.null(.x)) "FAILED" else "OK")
+```
+
+```{r}
+#| label: sig-2021
+#| message: false
+
+sig_2021 <- map_dfr(
+    names(synth_2021_list),
+    ~ synth_2021_list[[.x]] |>
+        grab_significance() |>
+        filter(unit_name == .x) |>
+        mutate(borough = .x)
+)
+
+sig_2021 |>
+    select(borough, rank, mspe_ratio, fishers_exact_pvalue) |>
+    arrange(rank) |>
+    kable(
+        digits    = 3,
+        caption   = "Synthetic Control Results — 2021 ULEZ Expansion",
+        col.names = c("Borough", "Rank", "MSPE Ratio", "p-value")
+    )
+```
+
+```{r}
+#| label: plot-2021-all
+#| message: false
+
+plots_2021_all <- map2(
+    synth_2021_list,
+    names(synth_2021_list),
+    ~ .x |>
+        plot_trends() +
+        geom_vline(xintercept = 2019.25,
+                   linetype = "dashed", colour = "black", linewidth = 0.6) +
+        geom_vline(xintercept = 2021.75,
+                   linetype = "dashed", colour = "red", linewidth = 0.6) +
+        annotate("text", x = 2019.25, y = Inf,
+                 vjust = 1.5, hjust = -0.1, size = 2, colour = "black",
+                 label = "Ann.") +
+        annotate("text", x = 2021.75, y = Inf,
+                 vjust = 1.5, hjust = -0.1, size = 2, colour = "red",
+                 label = "Imp.") +
+        labs(
+            title = .y,
+            x     = NULL,
+            y     = "ULEV share"
+        ) +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 8))
+)
+
+wrap_plots(plots_2021_all, ncol = 2)
+```
+
+```{r}
+#| label: setup-2023
+#| message: false
+
+# 2023 expansion
+# Treated: outer London boroughs (london == 1, treated == 1)
+# Donor pool: surrounding districts ONLY (never treated)
+# Note: inner London boroughs excluded from donor pool as they
+# were already subject to earlier ULEZ expansions
+
+treated_2023 <- panel_synth |>
+    filter(london == 1, treated == 1) |>
+    distinct(ons_code, la_name) |>
+    pull(la_name)
+
+donor_2023 <- panel_synth |>
+    filter(london == 0) |>
+    distinct(ons_code, la_name) |>
+    pull(la_name)
+
+message("Treated units (2023): ", length(treated_2023))
+message("Donor pool (2023): ", length(donor_2023))
+print(donor_2023)
+```
+
+```{r}
+#| label: synth-2023
+#| message: false
+
+# Filter panel to 2023 expansion window
+# Announcement: 2022 Q4, Implementation: 2023 Q3
+# Window: 2011 Q4 to 2024 Q4 (full panel)
+panel_2023 <- panel_synth |>
+    filter(la_name %in% c(treated_2023, donor_2023))
+
+run_synth_2023 <- function(borough) {
+    data_filtered <- panel_2023 |>
+        filter(la_name %in% donor_2023 | la_name == borough)
+    
+    tryCatch(
+        data_filtered |>
+            synthetic_control(
+                outcome           = ulev_share,
+                unit              = la_name,
+                time              = time_num,
+                i_unit            = borough,
+                i_time            = 2022.75,
+                generate_placebos = TRUE
+            ) |>
+            generate_predictor(
+                time_window   = 2019.0:2022.75,
+                mean_ulev_pre = mean(ulev_share)
+            ) |>
+            generate_predictor(
+                time_window = 2022.0,
+                ulev_pre    = ulev_share
+            ) |>
+            generate_weights(optimization_window = 2019.0:2022.75) |>
+            generate_control(),
+        error = function(e) {
+            message("Failed for ", borough, ": ", conditionMessage(e))
+            NULL
+        }
+    )
+}
+
+synth_2023_list <- map(treated_2023, run_synth_2023)
+names(synth_2023_list) <- treated_2023
+
+map_chr(synth_2023_list, ~ if (is.null(.x)) "FAILED" else "OK")
+```
+
+```{r}
+#| label: sig-2023
+#| message: false
+
+sig_2023 <- map_dfr(
+    names(synth_2023_list),
+    ~ synth_2023_list[[.x]] |>
+        grab_significance() |>
+        filter(unit_name == .x) |>
+        mutate(borough = .x)
+)
+
+sig_2023 |>
+    select(borough, rank, mspe_ratio, fishers_exact_pvalue) |>
+    arrange(rank) |>
+    kable(
+        digits    = 3,
+        caption   = "Synthetic Control Results — 2023 ULEZ Expansion",
+        col.names = c("Borough", "Rank", "MSPE Ratio", "p-value")
+    )
+```
+
+```{r}
+#| label: plot-2023-significant
+#| message: false
+
+# Plot significant and near-significant boroughs only (p <= 0.10)
+sig_boroughs_2023 <- c("Barking and Dagenham", "Hillingdon", "Sutton",
+                        "Harrow", "Wandsworth")
+
+plots_2023_sig <- map2(
+    synth_2023_list[sig_boroughs_2023],
+    sig_boroughs_2023,
+    ~ .x |>
+        plot_trends() +
+        geom_vline(xintercept = 2022.75,
+                   linetype = "dashed", colour = "black", linewidth = 0.6) +
+        geom_vline(xintercept = 2023.5,
+                   linetype = "dashed", colour = "red", linewidth = 0.6) +
+        annotate("text", x = 2022.75, y = Inf,
+                 vjust = 1.5, hjust = -0.1, size = 2.5, colour = "black",
+                 label = "Ann.") +
+        annotate("text", x = 2023.5, y = Inf,
+                 vjust = 1.5, hjust = -0.1, size = 2.5, colour = "red",
+                 label = "Imp.") +
+        labs(
+            title = .y,
+            x     = NULL,
+            y     = "ULEV share"
+        ) +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 9))
+)
+
+wrap_plots(plots_2023_sig, ncol = 3)
+
+#| label: plot-2023-trends-1
+#| message: false
+
+# First 10 boroughs — trends
+wrap_plots(plots_2023_all[1:10], ncol = 2)
+#| label: plot-2023-trends-2
+#| message: false
+
+# Remaining 9 boroughs — trends
+wrap_plots(plots_2023_all[11:19], ncol = 2)
+```
+
+```{r}
+#| label: plot-2023-placebos
+#| message: false
+
+plots_2023_placebo <- map2(
+    synth_2023_list,
+    names(synth_2023_list),
+    ~ .x |>
+        plot_placebos() +
+        geom_vline(xintercept = 2022.75,
+                   linetype = "dashed", colour = "black", linewidth = 0.6) +
+        geom_vline(xintercept = 2023.5,
+                   linetype = "dashed", colour = "red", linewidth = 0.6) +
+        labs(
+            title = .y,
+            x     = NULL,
+            y     = "Gap in ULEV share"
+        ) +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 8))
+)
+
+wrap_plots(plots_2023_placebo, ncol = 4)
+```
+
+```{r}
+#| label: heterogeneity-2023
+#| message: false
+
+# Extract post-announcement gap for each borough
+extract_gap <- function(synth_obj, borough) {
+    synth_obj |>
+        grab_synthetic_control() |>
+        filter(time_unit > 2022.75) |>
+        mutate(gap = real_y - synth_y) |>
+        summarise(
+            mean_gap  = mean(gap),
+            max_gap   = max(gap),
+            final_gap = last(gap)
+        ) |>
+        mutate(la_name = borough)
+}
+
+gaps_2023 <- map_dfr(
+    names(synth_2023_list),
+    ~ extract_gap(synth_2023_list[[.x]], .x)
+)
+
+# Merge with socio-demographic controls
+# Use pre-announcement snapshot (2022 Q3)
+controls_2023 <- analysis_panel |>
+    st_drop_geometry() |>
+    filter(yq == as.yearqtr("2022 Q3"),
+           london == 1, treated == 1) |>
+    select(la_name, pct_no_car, deprivation_index,
+           pop_density_per_km2, house_price, median_earnings_gbp,
+           avg_cars_hh)
+
+hetero_2023 <- gaps_2023 |>
+    left_join(controls_2023, by = "la_name")
+
+glimpse(hetero_2023)
+```
+
+```{r}
+#| label: hetero-plots-2023
+#| message: false
+
+# Create scatter plots of gap vs each characteristic
+p_income <- ggplot(hetero_2023, aes(x = median_earnings_gbp, y = mean_gap,
+                                     label = la_name)) +
+    geom_point(size = 2) +
+    geom_text(size = 2.5, vjust = -0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_smooth(method = "lm", se = TRUE, colour = "steelblue") +
+    labs(title = "Gap vs Median Earnings",
+         x = "Median earnings (£)", y = "Mean post-announcement gap") +
+    theme_minimal()
+
+p_house <- ggplot(hetero_2023, aes(x = house_price, y = mean_gap,
+                                    label = la_name)) +
+    geom_point(size = 2) +
+    geom_text(size = 2.5, vjust = -0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_smooth(method = "lm", se = TRUE, colour = "steelblue") +
+    labs(title = "Gap vs House Price",
+         x = "Average house price (£)", y = "Mean post-announcement gap") +
+    theme_minimal()
+
+p_nocar <- ggplot(hetero_2023, aes(x = pct_no_car, y = mean_gap,
+                                    label = la_name)) +
+    geom_point(size = 2) +
+    geom_text(size = 2.5, vjust = -0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_smooth(method = "lm", se = TRUE, colour = "steelblue") +
+    labs(title = "Gap vs % No Car",
+         x = "% households with no car", y = "Mean post-announcement gap") +
+    theme_minimal()
+
+p_density <- ggplot(hetero_2023, aes(x = pop_density_per_km2, y = mean_gap,
+                                      label = la_name)) +
+    geom_point(size = 2) +
+    geom_text(size = 2.5, vjust = -0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_smooth(method = "lm", se = TRUE, colour = "steelblue") +
+    labs(title = "Gap vs Population Density",
+         x = "Population density (per km²)", y = "Mean post-announcement gap") +
+    theme_minimal()
+
+(p_income + p_house) / (p_nocar + p_density)
+```
+
+```{r}
+#| label: hetero-plots-no-wandsworth
+#| message: false
+
+hetero_no_wand <- hetero_2023 |> filter(la_name != "Wandsworth")
+
+p_income2 <- ggplot(hetero_no_wand, aes(x = median_earnings_gbp, y = mean_gap,
+                                          label = la_name)) +
+    geom_point(size = 2) +
+    geom_text(size = 2.5, vjust = -0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_smooth(method = "lm", se = TRUE, colour = "steelblue") +
+    labs(title = "Gap vs Median Earnings (excl. Wandsworth)",
+         x = "Median earnings (£)", y = "Mean post-announcement gap") +
+    theme_minimal()
+
+p_house2 <- ggplot(hetero_no_wand, aes(x = house_price, y = mean_gap,
+                                         label = la_name)) +
+    geom_point(size = 2) +
+    geom_text(size = 2.5, vjust = -0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_smooth(method = "lm", se = TRUE, colour = "steelblue") +
+    labs(title = "Gap vs House Price (excl. Wandsworth)",
+         x = "Average house price (£)", y = "Mean post-announcement gap") +
+    theme_minimal()
+
+p_nocar2 <- ggplot(hetero_no_wand, aes(x = pct_no_car, y = mean_gap,
+                                         label = la_name)) +
+    geom_point(size = 2) +
+    geom_text(size = 2.5, vjust = -0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_smooth(method = "lm", se = TRUE, colour = "steelblue") +
+    labs(title = "Gap vs % No Car (excl. Wandsworth)",
+         x = "% households with no car", y = "Mean post-announcement gap") +
+    theme_minimal()
+
+p_density2 <- ggplot(hetero_no_wand, aes(x = pop_density_per_km2, y = mean_gap,
+                                           label = la_name)) +
+    geom_point(size = 2) +
+    geom_text(size = 2.5, vjust = -0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_smooth(method = "lm", se = TRUE, colour = "steelblue") +
+    labs(title = "Gap vs Population Density (excl. Wandsworth)",
+         x = "Population density (per km²)", y = "Mean post-announcement gap") +
+    theme_minimal()
+
+(p_income2 + p_house2) / (p_nocar2 + p_density2)
+```
+
+```{r}
+#| label: synth-2023-disagg
+#| message: false
+
+# Flexible synthetic control function for any outcome
+run_synth_2023_outcome <- function(borough, outcome_var) {
+    data_filtered <- panel_2023 |>
+        filter(la_name %in% donor_2023 | la_name == borough)
+    
+    tryCatch(
+        data_filtered |>
+            synthetic_control(
+                outcome           = !!sym(outcome_var),
+                unit              = la_name,
+                time              = time_num,
+                i_unit            = borough,
+                i_time            = 2022.75,
+                generate_placebos = TRUE
+            ) |>
+            generate_predictor(
+                time_window   = 2019.0:2022.75,
+                mean_pre      = mean(!!sym(outcome_var))
+            ) |>
+            generate_predictor(
+                time_window = 2022.0,
+                pre_level   = !!sym(outcome_var)
+            ) |>
+            generate_weights(optimization_window = 2019.0:2022.75) |>
+            generate_control(),
+        error = function(e) {
+            message("Failed for ", borough, ": ", conditionMessage(e))
+            NULL
+        }
+    )
+}
+
+# Run for company share
+synth_2023_company <- map(treated_2023, 
+                          ~ run_synth_2023_outcome(.x, "company_share"))
+names(synth_2023_company) <- treated_2023
+
+# Run for private share
+synth_2023_private <- map(treated_2023,
+                          ~ run_synth_2023_outcome(.x, "private_share"))
+names(synth_2023_private) <- treated_2023
+
+message("Company: ", sum(map_chr(synth_2023_company, ~ if (is.null(.x)) "FAILED" else "OK") == "OK"), " succeeded")
+message("Private: ", sum(map_chr(synth_2023_private, 
+        ~ if (is.null(.x)) "FAILED" else "OK") == "OK"), " succeeded")
+```
+
+```{r}
+# Run for BEV share
+synth_2023_bev <- map(treated_2023,
+                      ~ run_synth_2023_outcome(.x, "bev_share"))
+names(synth_2023_bev) <- treated_2023
+
+# Run for PHEV share
+synth_2023_phev <- map(treated_2023,
+                       ~ run_synth_2023_outcome(.x, "phev_share"))
+names(synth_2023_phev) <- treated_2023
+
+message("BEV: ", sum(map_chr(synth_2023_bev,
+        ~ if (is.null(.x)) "FAILED" else "OK") == "OK"), " succeeded")
+message("PHEV: ", sum(map_chr(synth_2023_phev,
+        ~ if (is.null(.x)) "FAILED" else "OK") == "OK"), " succeeded")
+```
+
+```{r}
+#| label: sig-2023-fuel
+#| message: false
+
+# BEV share significance
+sig_2023_bev <- map_dfr(
+    names(synth_2023_bev),
+    ~ synth_2023_bev[[.x]] |>
+        grab_significance() |>
+        filter(unit_name == .x) |>
+        mutate(borough = .x)
+)
+
+# PHEV share significance
+sig_2023_phev <- map_dfr(
+    names(synth_2023_phev),
+    ~ synth_2023_phev[[.x]] |>
+        grab_significance() |>
+        filter(unit_name == .x) |>
+        mutate(borough = .x)
+)
+
+# Combined table
+sig_2023_bev |>
+    select(borough, rank, fishers_exact_pvalue) |>
+    rename(rank_bev = rank, pval_bev = fishers_exact_pvalue) |>
+    left_join(
+        sig_2023_phev |>
+            select(borough, rank, fishers_exact_pvalue) |>
+            rename(rank_phev = rank, pval_phev = fishers_exact_pvalue),
+        by = "borough"
+    ) |>
+    arrange(rank_bev) |>
+    kable(
+        digits    = 3,
+        caption   = "Synthetic Control Results by Fuel Type — 2023 ULEZ Expansion",
+        col.names = c("Borough", "Rank (BEV)", "p-value (BEV)",
+                      "Rank (PHEV)", "p-value (PHEV)")
+    )
+```
+
+```{r}
+#| label: results-summary-table
+#| message: false
+
+# Function to extract summary stats for each borough
+extract_summary <- function(synth_obj, borough, announce_time, implement_time) {
+    
+    sc_data <- synth_obj |> grab_synthetic_control()
+    
+    # Pre-period fit
+    pre_mspe <- sc_data |>
+        filter(time_unit <= announce_time) |>
+        mutate(sq_error = (real_y - synth_y)^2) |>
+        summarise(mspe = mean(sq_error)) |>
+        pull(mspe)
+    
+    # Anticipation window gap (announcement to implementation)
+    anticipation_gap <- sc_data |>
+        filter(time_unit > announce_time, 
+               time_unit < implement_time) |>
+        mutate(gap = real_y - synth_y) |>
+        summarise(mean_gap = mean(gap)) |>
+        pull(mean_gap)
+    
+    # Post-announcement mean gap
+    post_gap <- sc_data |>
+        filter(time_unit > announce_time) |>
+        mutate(gap = real_y - synth_y) |>
+        summarise(mean_gap = mean(gap)) |>
+        pull(mean_gap)
+    
+    tibble(
+        borough          = borough,
+        pre_mspe         = pre_mspe,
+        anticipation_gap = anticipation_gap,
+        post_gap         = post_gap
+    )
+}
+
+# 2019 expansion
+summary_2019 <- map_dfr(
+    names(synth_2019_list),
+    ~ extract_summary(synth_2019_list[[.x]], .x,
+                      announce_time  = 2017.0,
+                      implement_time = 2019.25)
+) |>
+    left_join(sig_2019 |> select(borough, rank, fishers_exact_pvalue),
+              by = "borough") |>
+    mutate(expansion = "2019")
+
+# 2021 expansion
+summary_2021 <- map_dfr(
+    names(synth_2021_list),
+    ~ extract_summary(synth_2021_list[[.x]], .x,
+                      announce_time  = 2019.25,
+                      implement_time = 2021.75)
+) |>
+    left_join(sig_2021 |> select(borough, rank, fishers_exact_pvalue),
+              by = "borough") |>
+    mutate(expansion = "2021")
+
+# 2023 expansion
+summary_2023 <- map_dfr(
+    names(synth_2023_list),
+    ~ extract_summary(synth_2023_list[[.x]], .x,
+                      announce_time  = 2022.75,
+                      implement_time = 2023.5)
+) |>
+    left_join(sig_2023 |> select(borough, rank, fishers_exact_pvalue),
+              by = "borough") |>
+    mutate(expansion = "2023")
+
+# Combine all three
+results_table <- bind_rows(summary_2019, summary_2021, summary_2023) |>
+    mutate(
+        direction = case_when(
+            anticipation_gap > 0 ~ "Positive",
+            anticipation_gap < 0 ~ "Negative",
+            TRUE                 ~ "Neutral"
+        ),
+        significant = case_when(
+            fishers_exact_pvalue <= 0.05 ~ "**",
+            fishers_exact_pvalue <= 0.10 ~ "*",
+            TRUE                         ~ ""
+        )
+    ) |>
+    select(expansion, borough, pre_mspe, anticipation_gap, 
+           post_gap, rank, fishers_exact_pvalue, significant, direction) |>
+    arrange(expansion, rank)
+
+results_table |>
+    kable(
+        digits    = 4,
+        caption   = "Synthetic Control Results — All Three ULEZ Expansions",
+        col.names = c("Expansion", "Borough", "Pre-MSPE", 
+                      "Anticipation Gap", "Post-Ann. Gap",
+                      "Rank", "p-value", "", "Direction")
+    )
+```
