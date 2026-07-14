@@ -1,0 +1,613 @@
+---
+title: "4. Robustness Checks"
+subtitle: "MY498: Capstone Project 2025-26"
+author: "68508"
+date: today
+format:
+    html:
+        embed-resources: true
+        toc: true
+        number-sections: true
+        fontsize: 12pt
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+library(tidyverse)
+library(zoo)
+library(sf)
+library(here)
+library(fixest)
+library(did)
+library(rdrobust)
+library(modelsummary)
+library(kableExtra)
+library(patchwork)
+
+Proc <- here("data", "processed")
+
+analysis_panel <- readRDS(file.path(Proc, "analysis_panel.rds"))
+study_sf       <- readRDS(file.path(Proc, "study_sf.rds"))
+
+study_sf <- study_sf |>
+    mutate(london = as.integer(str_starts(ons_code, "E09")))
+
+message("Panel loaded: ", nrow(analysis_panel), " rows | ",
+        n_distinct(analysis_panel$ons_code), " study units")
+```
+
+```{r}
+#| label: prep-estimation
+#| message: false
+
+panel_est <- analysis_panel |>
+    st_drop_geometry() |>
+    mutate(
+        london          = as.integer(str_starts(ons_code, "E09")),
+        borough_id      = as.integer(factor(ons_code)),
+        time_id         = as.integer(factor(yq)),
+        period          = year * 4 + quarter,
+        log_ulev_share  = log(ulev_share + 0.0001),
+        log_house_price = log(house_price)
+    ) |>
+    filter(yq >= as.yearqtr("2019 Q1"))
+
+message("Estimation sample: ", nrow(panel_est), " rows")
+message("  London boroughs: ", n_distinct(panel_est$ons_code[panel_est$london == 1]))
+message("  Surrounding districts: ", n_distinct(panel_est$ons_code[panel_est$london == 0]))
+message("  Quarters: ", n_distinct(panel_est$yq))
+```
+
+```{r}
+#| label: twfe-did
+#| message: false
+
+# =============================================================================
+# TWFE DiD specifications
+# Treated = outer London boroughs (london == 1, treated == 1)
+# Control = inner London boroughs (london == 1, treated == 0)
+# =============================================================================
+
+# 1. Baseline — London boroughs only
+twfe_base <- feols(
+    ulev_share ~ treated:post_announce |
+        borough_id + time_id,
+    data    = panel_est |> filter(london == 1),
+    cluster = ~ons_code
+)
+
+# 2. With surrounding districts as additional never-treated controls
+twfe_surround <- feols(
+    ulev_share ~ treated:post_announce |
+        borough_id + time_id,
+    data    = panel_est,
+    cluster = ~ons_code
+)
+
+# 3. With linear trends — London only
+twfe_trends <- feols(
+    ulev_share ~ treated:post_announce + treated:t_announce |
+        borough_id + time_id,
+    data    = panel_est |> filter(london == 1),
+    cluster = ~ons_code
+)
+
+# 4. With linear trends — including surrounding districts
+twfe_trends_surround <- feols(
+    ulev_share ~ treated:post_announce + treated:t_announce |
+        borough_id + time_id,
+    data    = panel_est,
+    cluster = ~ons_code
+)
+
+modelsummary(
+    list(
+        "Baseline\n(London only)"        = twfe_base,
+        "With Surrounding\nDistricts"    = twfe_surround,
+        "Linear Trends\n(London only)"   = twfe_trends,
+        "Linear Trends\n(+ Surrounding)" = twfe_trends_surround
+    ),
+    stars   = c("*" = 0.1, "**" = 0.05, "***" = 0.01),
+    gof_map = c("nobs", "adj.r.squared", "rmse"),
+    title   = "TWFE DiD Results: ULEV Compliance Share"
+)
+```
+
+```{r}
+#| label: twfe-did-baseline
+#| message: false
+
+# 1. Baseline — London boroughs only
+twfe_base <- feols(
+    ulev_share ~ treated:post_announce + log_house_price |
+        borough_id + time_id,
+    data    = panel_est |> filter(london == 1),
+    cluster = ~ons_code
+)
+
+# 2. With surrounding districts
+twfe_surround <- feols(
+    ulev_share ~ treated:post_announce + log_house_price |
+        borough_id + time_id,
+    data    = panel_est,
+    cluster = ~ons_code
+)
+
+# 3. With linear trends — London only
+twfe_trends <- feols(
+    ulev_share ~ treated:post_announce + treated:t_announce + 
+                 log_house_price |
+        borough_id + time_id,
+    data    = panel_est |> filter(london == 1),
+    cluster = ~ons_code
+)
+
+# 4. With linear trends — including surrounding districts
+twfe_trends_surround <- feols(
+    ulev_share ~ treated:post_announce + treated:t_announce + 
+                 log_house_price |
+        borough_id + time_id,
+    data    = panel_est,
+    cluster = ~ons_code
+)
+
+modelsummary(
+    list(
+        "Baseline\n(London only)"        = twfe_base,
+        "With Surrounding\nDistricts"    = twfe_surround,
+        "Linear Trends\n(London only)"   = twfe_trends,
+        "Linear Trends\n(+ Surrounding)" = twfe_trends_surround
+    ),
+    stars   = c("*" = 0.1, "**" = 0.05, "***" = 0.01),
+    gof_map = c("nobs", "adj.r.squared", "rmse"),
+    title   = "TWFE DiD Results: ULEV Compliance Share"
+)
+```
+
+```{r}
+#| label: event-study
+#| message: false
+
+panel_est <- panel_est |>
+    mutate(
+        t_bin = case_when(
+            t_announce < -12 ~ -12L,
+            t_announce > 8   ~  8L,
+            TRUE             ~ as.integer(t_announce)
+        ),
+        t_bin = relevel(factor(t_bin), ref = "-1")
+    )
+
+# Event study — London only
+es_london <- feols(
+    ulev_share ~ treated:t_bin + log_house_price |
+        borough_id + time_id,
+    data    = panel_est |> filter(london == 1),
+    cluster = ~ons_code
+)
+
+# Event study — including surrounding districts
+es_surround <- feols(
+    ulev_share ~ treated:t_bin + log_house_price |
+        borough_id + time_id,
+    data    = panel_est,
+    cluster = ~ons_code
+)
+
+# Extract and plot
+extract_es <- function(model, label) {
+    broom::tidy(model, conf.int = TRUE) |>
+        filter(str_detect(term, "t_bin")) |>
+        mutate(t = as.integer(str_extract(term, "-?\\d+$")),
+               spec = label) |>
+        bind_rows(tibble(
+            term = "ref", estimate = 0, std.error = 0,
+            conf.low = 0, conf.high = 0,
+            t = -1L, spec = label
+        ))
+}
+
+es_coefs <- bind_rows(
+    extract_es(es_london,   "London only"),
+    extract_es(es_surround, "With surrounding districts")
+)
+
+ggplot(es_coefs, aes(x = t, y = estimate, colour = spec, fill = spec)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+    geom_vline(xintercept = -0.5, linetype = "dotted", colour = "black") +
+    geom_vline(xintercept = 2.5,  linetype = "dotted", colour = "red") +
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15,
+                colour = NA) +
+    geom_line(linewidth = 0.8) +
+    geom_point(size = 2) +
+    annotate("text", x = -0.5, y = Inf, vjust = 2, hjust = -0.1,
+             label = "Announcement", size = 3, colour = "black") +
+    annotate("text", x = 2.5, y = Inf, vjust = 2, hjust = -0.1,
+             label = "Implementation", size = 3, colour = "red") +
+    scale_colour_manual(values = c(
+        "London only"                  = "steelblue",
+        "With surrounding districts"   = "firebrick"
+    )) +
+    scale_fill_manual(values = c(
+        "London only"                  = "steelblue",
+        "With surrounding districts"   = "firebrick"
+    )) +
+    labs(
+        title    = "Event Study: ULEV Compliance Share",
+        subtitle = "Treated = outer London boroughs | Reference period = t−1",
+        x        = "Quarters relative to announcement (2022 Q4 = 0)",
+        y        = "Estimated coefficient",
+        colour   = NULL, fill = NULL,
+        caption  = "SEs clustered by borough. Borough and quarter FE. Control: log house price."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: its
+#| message: false
+
+# =============================================================================
+# Interrupted Time Series (ITS)
+# Tests whether announcement caused level shift or trend change
+# Three groups: inner London, outer London, surrounding districts
+# =============================================================================
+
+its_data <- analysis_panel |>
+    st_drop_geometry() |>
+    mutate(
+        group = case_when(
+            london == 1 & treated == 0 ~ "Inner London (Control)",
+            london == 1 & treated == 1 ~ "Outer London (Treated)",
+            london == 0                ~ "Surrounding Districts"
+        ),
+        t = as.numeric(yq) - min(as.numeric(yq)),
+        time_since_announce = pmax(0, as.numeric(yq) - 
+                                   as.numeric(as.yearqtr("2022 Q4")))
+    ) |>
+    group_by(yq, group, t, time_since_announce, post_announce) |>
+    summarise(
+        mean_ulev_share = mean(ulev_share, na.rm = TRUE),
+        .groups = "drop"
+    )
+
+# Run ITS for each group
+its_inner <- lm(
+    mean_ulev_share ~ t + post_announce + time_since_announce,
+    data = its_data |> filter(group == "Inner London (Control)")
+)
+
+its_outer <- lm(
+    mean_ulev_share ~ t + post_announce + time_since_announce,
+    data = its_data |> filter(group == "Outer London (Treated)")
+)
+
+its_surrounding <- lm(
+    mean_ulev_share ~ t + post_announce + time_since_announce,
+    data = its_data |> filter(group == "Surrounding Districts")
+)
+
+modelsummary(
+    list(
+        "Inner London (Control)" = its_inner,
+        "Outer London (Treated)" = its_outer,
+        "Surrounding Districts"  = its_surrounding
+    ),
+    stars   = c("*" = 0.1, "**" = 0.05, "***" = 0.01),
+    gof_map = c("nobs", "adj.r.squared", "rmse"),
+    title   = "Interrupted Time Series Results by Group"
+)
+```
+
+```{r}
+#| label: its-plot
+#| message: false
+
+# Generate fitted values separately for each group
+fitted_inner <- its_data |>
+    filter(group == "Inner London (Control)") |>
+    mutate(fitted = predict(its_inner))
+
+fitted_outer <- its_data |>
+    filter(group == "Outer London (Treated)") |>
+    mutate(fitted = predict(its_outer))
+
+fitted_surrounding <- its_data |>
+    filter(group == "Surrounding Districts") |>
+    mutate(fitted = predict(its_surrounding))
+
+its_fitted <- bind_rows(fitted_inner, fitted_outer, fitted_surrounding)
+
+ggplot(its_fitted, aes(x = yq, colour = group)) +
+    geom_point(aes(y = mean_ulev_share), size = 1.5) +
+    geom_line(aes(y = fitted), linewidth = 0.8) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2022 Q4")),
+               linetype = "dashed", colour = "black", linewidth = 0.6) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2023 Q3")),
+               linetype = "dashed", colour = "red", linewidth = 0.6) +
+    scale_colour_manual(values = c(
+        "Inner London (Control)" = "steelblue",
+        "Outer London (Treated)" = "firebrick",
+        "Surrounding Districts"  = "darkgreen"
+    )) +
+    labs(
+        title    = "Interrupted Time Series: ULEV Compliance Share",
+        subtitle = "Actual (points) vs fitted ITS model (lines)",
+        x        = "Quarter",
+        y        = "Mean ULEV share",
+        colour   = NULL,
+        caption  = "Black dashed = announcement (2022 Q4). Red dashed = implementation (2023 Q3)."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: its-did
+#| message: false
+
+# DiD-ITS — outer London vs surrounding districts only
+# Surrounding districts = baseline (never-treated)
+# This isolates the announcement effect specific to outer London
+# above the common trend in surrounding districts
+
+its_did_data <- analysis_panel |>
+    st_drop_geometry() |>
+    filter(london == 1 & treated == 1 | london == 0) |>
+    mutate(
+        t = as.numeric(yq) - min(as.numeric(yq)),
+        time_since_announce = pmax(0, as.numeric(yq) -
+                                   as.numeric(as.yearqtr("2022 Q4")))
+    ) |>
+    group_by(yq, treated, london, t, time_since_announce, post_announce) |>
+    summarise(
+        mean_ulev_share = mean(ulev_share, na.rm = TRUE),
+        .groups = "drop"
+    ) |>
+    mutate(
+        outer_london = as.integer(london == 1 & treated == 1)
+    )
+
+its_did_model <- lm(
+    mean_ulev_share ~ t + outer_london +
+        post_announce + post_announce:outer_london +
+        time_since_announce + time_since_announce:outer_london,
+    data = its_did_data
+)
+
+summary(its_did_model)
+```
+
+```{r}
+#| label: its-did-plot
+#| message: false
+
+fitted_did <- its_did_data |>
+    mutate(
+        fitted = predict(its_did_model),
+        group  = if_else(outer_london == 1, 
+                         "Outer London (Treated)", 
+                         "Surrounding Districts (Never-Treated)")
+    )
+
+ggplot(fitted_did, aes(x = yq, colour = group)) +
+    geom_point(aes(y = mean_ulev_share), size = 1.5) +
+    geom_line(aes(y = fitted), linewidth = 0.8) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2022 Q4")),
+               linetype = "dashed", colour = "black", linewidth = 0.6) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2023 Q3")),
+               linetype = "dashed", colour = "red", linewidth = 0.6) +
+    scale_colour_manual(values = c(
+        "Outer London (Treated)"              = "firebrick",
+        "Surrounding Districts (Never-Treated)" = "darkgreen"
+    )) +
+    labs(
+        title    = "DiD-ITS: Outer London vs Surrounding Districts",
+        subtitle = "Actual (points) vs fitted ITS model (lines)",
+        x        = "Quarter",
+        y        = "Mean ULEV share",
+        colour   = NULL,
+        caption  = "Black dashed = announcement (2022 Q4). Red dashed = implementation (2023 Q3)."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: spillover-test
+#| message: false
+
+# Test for spillover effects from earlier expansions
+# If surrounding districts accelerated ULEV adoption after 2019 and 2021
+# expansions despite never being subject to ULEZ, that's spillover evidence
+
+spillover_data <- analysis_panel |>
+    st_drop_geometry() |>
+    mutate(
+        group = case_when(
+            london == 1 & treated == 0 ~ "Inner London (Control)",
+            london == 1 & treated == 1 ~ "Outer London (Treated)",
+            london == 0                ~ "Surrounding Districts (Never-Treated)"
+        )
+    ) |>
+    group_by(yq, group) |>
+    summarise(
+        mean_ulev_share = mean(ulev_share, na.rm = TRUE),
+        .groups = "drop"
+    )
+
+ggplot(spillover_data, aes(x = yq, y = mean_ulev_share, colour = group)) +
+    geom_line(linewidth = 0.8) +
+    # 2019 expansion
+    geom_vline(xintercept = as.numeric(as.yearqtr("2017 Q1")),
+               linetype = "dashed", colour = "grey40", linewidth = 0.5) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2019 Q2")),
+               linetype = "dotted", colour = "grey40", linewidth = 0.5) +
+    # 2021 expansion
+    geom_vline(xintercept = as.numeric(as.yearqtr("2019 Q2")),
+               linetype = "dashed", colour = "purple", linewidth = 0.5) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2021 Q4")),
+               linetype = "dotted", colour = "purple", linewidth = 0.5) +
+    # 2023 expansion
+    geom_vline(xintercept = as.numeric(as.yearqtr("2022 Q4")),
+               linetype = "dashed", colour = "black", linewidth = 0.5) +
+    geom_vline(xintercept = as.numeric(as.yearqtr("2023 Q3")),
+               linetype = "dashed", colour = "red", linewidth = 0.5) +
+    annotate("text", x = as.numeric(as.yearqtr("2017 Q1")),
+             y = Inf, vjust = 1.5, hjust = -0.1, size = 2.5,
+             label = "2019\nAnn.", colour = "grey40") +
+    annotate("text", x = as.numeric(as.yearqtr("2019 Q2")),
+             y = Inf, vjust = 1.5, hjust = -0.1, size = 2.5,
+             label = "2021\nAnn.", colour = "purple") +
+    annotate("text", x = as.numeric(as.yearqtr("2022 Q4")),
+             y = Inf, vjust = 1.5, hjust = -0.1, size = 2.5,
+             label = "2023\nAnn.", colour = "black") +
+    scale_colour_manual(values = c(
+        "Inner London (Control)"              = "steelblue",
+        "Outer London (Treated)"              = "firebrick",
+        "Surrounding Districts (Never-Treated)" = "darkgreen"
+    )) +
+    labs(
+        title    = "ULEV Adoption Trajectories — Spillover Test",
+        subtitle = "All three ULEZ expansion announcements and implementations",
+        x        = "Quarter",
+        y        = "Mean ULEV share",
+        colour   = NULL,
+        caption  = "Dashed = announcement. Dotted = implementation."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: anticipation-2019-2021
+#| message: false
+
+# Focus on pre-2023 period to isolate 2019 and 2021 spillover effects
+# Key question: did surrounding districts accelerate after 2019 and 2021
+# announcements despite never being subject to ULEZ?
+
+anticipation_data <- analysis_panel |>
+    st_drop_geometry() |>
+    filter(yq <= as.yearqtr("2022 Q3")) |>  # pre-2023 announcement
+    mutate(
+        group = case_when(
+            london == 1 & treated == 0 ~ "Inner London\n(2019 treated)",
+            london == 1 & treated == 1 ~ "Outer London\n(2021/2023 treated)",
+            london == 0                ~ "Surrounding Districts\n(never treated)"
+        ),
+        # Event time relative to 2019 announcement (2017 Q1 = 0)
+        t_2019 = (year - 2017) * 4 + (quarter - 1),
+        # Event time relative to 2021 announcement (2019 Q2 = 0)
+        t_2021 = (year - 2019) * 4 + (quarter - 2)
+    ) |>
+    group_by(yq, group, t_2019, t_2021) |>
+    summarise(
+        mean_ulev_share = mean(ulev_share, na.rm = TRUE),
+        .groups = "drop"
+    )
+
+# Plot relative to 2019 announcement
+ggplot(anticipation_data, 
+       aes(x = t_2019, y = mean_ulev_share, colour = group)) +
+    geom_line(linewidth = 0.8) +
+    geom_vline(xintercept = 0,    linetype = "dashed", 
+               colour = "black", linewidth = 0.6) +
+    geom_vline(xintercept = 8.25, linetype = "dashed", 
+               colour = "red", linewidth = 0.6) +
+    annotate("text", x = 0, y = Inf, vjust = 1.5, hjust = -0.1,
+             size = 3, colour = "black", label = "2019 Ann.") +
+    annotate("text", x = 8.25, y = Inf, vjust = 1.5, hjust = -0.1,
+             size = 3, colour = "red", label = "2019 Imp.") +
+    scale_colour_manual(values = c(
+        "Inner London\n(2019 treated)"          = "steelblue",
+        "Outer London\n(2021/2023 treated)"     = "firebrick",
+        "Surrounding Districts\n(never treated)" = "darkgreen"
+    )) +
+    labs(
+        title    = "ULEV Adoption Around 2019 ULEZ Announcement",
+        subtitle = "Quarters relative to 2019 announcement (2017 Q1 = 0)",
+        x        = "Quarters relative to 2019 announcement",
+        y        = "Mean ULEV share",
+        colour   = NULL
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: rdd
+#| message: false
+
+# =============================================================================
+# Spatial RDD — distance to 2021 ULEZ boundary as running variable
+# Estimate discontinuity in ULEV share at the boundary (rv_2021 = 0)
+# Cross-sections at key dates around the 2023 announcement
+# Note: underpowered at borough level (n=33 London boroughs)
+# =============================================================================
+
+rdd_dates <- list(
+    pre_announce  = as.yearqtr("2022 Q3"),
+    announcement  = as.yearqtr("2022 Q4"),
+    anticipate_1  = as.yearqtr("2023 Q1"),
+    anticipate_2  = as.yearqtr("2023 Q2"),
+    implement     = as.yearqtr("2023 Q3"),
+    post_1        = as.yearqtr("2023 Q4")
+)
+
+rdd_results <- map(rdd_dates, function(target_yq) {
+    cs <- panel_est |>
+        filter(yq == target_yq,
+               london == 1,
+               !is.na(rv_2021),
+               !is.na(ulev_share))
+    rdrobust(y = cs$ulev_share, x = cs$rv_2021,
+             c = 0, p = 1, kernel = "triangular")
+})
+
+# Extract results
+rdd_table <- map_dfr(names(rdd_results), function(name) {
+    res <- rdd_results[[name]]
+    tibble(
+        period    = name,
+        estimate  = round(res$coef[2], 5),
+        se        = round(res$se[2], 5),
+        pvalue    = round(res$pv[2], 4),
+        bw_km     = round(res$bws[1], 2),
+        n_left    = res$N[1],
+        n_right   = res$N[2]
+    )
+})
+
+rdd_table |>
+    kable(
+        caption   = "Spatial RDD Results — Distance to 2021 ULEZ Boundary",
+        col.names = c("Period", "Estimate", "SE", "p-value",
+                      "Bandwidth (km)", "N (inside)", "N (outside)")
+    ) |>
+    kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+```{r}
+#| label: rdd-note
+#| message: false
+
+# Check how many boroughs fall within the optimal bandwidth
+panel_est |>
+    filter(yq == as.yearqtr("2022 Q4"), london == 1) |>
+    mutate(in_bw = abs(rv_2021) <= 2.24) |>
+    group_by(in_bw, treated) |>
+    summarise(
+        n        = n(),
+        boroughs = paste(la_name, collapse = ", "),
+        .groups  = "drop"
+    ) |>
+    kable(
+        caption   = "Boroughs Within Optimal Bandwidth (2.24km)",
+        col.names = c("Within BW", "Treated", "N", "Boroughs")
+    ) |>
+    kable_styling(bootstrap_options = c("striped", "hover"))
+```

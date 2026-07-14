@@ -57,7 +57,7 @@ if (length(to_install) > 0) {
 }
 
 if (!"nomisr" %in% rownames(installed.packages())) {
-    if(!"remotes" %in% rownames(installed.packaages())) {
+    if(!"remotes" %in% rownames(installed.packages())) {
         install.packages("remotes", repos = "https://cloud.r-project.org")
     }
     remotes::install_github("ropensci/nomisr")
@@ -73,16 +73,10 @@ message("All packages loaded successfully")
 
 ```{r}
 #| label: paths
-
-data <- here("data")
 raw <- here("data", "raw")
 Proc <- here('data', 'processed')
 
 # Create folders if it doesn't exist
-if (!dir.exists(data)) {
-    dir.create(data)
-}
-
 if (!dir.exists(raw)){
     dir.create(raw)
 }
@@ -366,7 +360,7 @@ ulez_2023 <- st_read(file.path(ulez_2023_dir, "londonWideUltraLowEmissionZone.sh
 
 ulez_2023_line <- st_cast(st_union(ulez_2023), "MULTILINESTRING")
 
-dist_2023 <- st_distance(study_sf, ulez_2023_line)
+dist_2023 <- st_distance(centroids_sf, ulez_2023_line)
 
 study_sf <- study_sf |>
     mutate(
@@ -736,11 +730,6 @@ glimpse(deprivation)
 ```{r}
 saveRDS(deprivation, file.path(Proc, "deprivation.rds"))
 message("Saved: deprivation.rds — ", nrow(deprivation), " rows")
-```
-
-```{r}
-saveRDS(deprivation, file.path(Proc, "deprivation.rds"))
-message("Saved: deprivation.rds")
 ```
 
 ### Population Density (TS006)

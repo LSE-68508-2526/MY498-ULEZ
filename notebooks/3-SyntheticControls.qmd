@@ -410,6 +410,34 @@ sig_2023 |>
 ```
 
 ```{r}
+#| label: plot-2023-all
+#| message: false
+
+plots_2023_all <- map2(
+    synth_2023_list,
+    names(synth_2023_list),
+    ~ .x |>
+        plot_trends() +
+        geom_vline(xintercept = 2022.75,
+                   linetype = "dashed", colour = "black", linewidth = 0.6) +
+        geom_vline(xintercept = 2023.5,
+                   linetype = "dashed", colour = "red", linewidth = 0.6) +
+        annotate("text", x = 2022.75, y = Inf,
+                 vjust = 1.5, hjust = -0.1, size = 2, colour = "black",
+                 label = "Ann.") +
+        annotate("text", x = 2023.5, y = Inf,
+                 vjust = 1.5, hjust = -0.1, size = 2, colour = "red",
+                 label = "Imp.") +
+        labs(
+            title = .y,
+            x     = NULL,
+            y     = "ULEV share"
+        ) +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 8))
+)
+```
+```{r}
 #| label: plot-2023-significant
 #| message: false
 
@@ -665,6 +693,45 @@ names(synth_2023_private) <- treated_2023
 message("Company: ", sum(map_chr(synth_2023_company, ~ if (is.null(.x)) "FAILED" else "OK") == "OK"), " succeeded")
 message("Private: ", sum(map_chr(synth_2023_private, 
         ~ if (is.null(.x)) "FAILED" else "OK") == "OK"), " succeeded")
+```
+
+```{r}
+#| label: sig-2023-disagg
+#| message: false
+
+sig_2023_company <- map_dfr(
+    names(synth_2023_company),
+    ~ synth_2023_company[[.x]] |>
+        grab_significance() |>
+        filter(unit_name == .x) |>
+        mutate(borough = .x)
+)
+
+sig_2023_private <- map_dfr(
+    names(synth_2023_private),
+    ~ synth_2023_private[[.x]] |>
+        grab_significance() |>
+        filter(unit_name == .x) |>
+        mutate(borough = .x)
+)
+
+sig_2023_company |>
+    select(borough, rank, fishers_exact_pvalue) |>
+    rename(rank_company = rank, pval_company = fishers_exact_pvalue) |>
+    left_join(
+        sig_2023_private |>
+            select(borough, rank, fishers_exact_pvalue) |>
+            rename(rank_private = rank, pval_private = fishers_exact_pvalue),
+        by = "borough"
+    ) |>
+    arrange(rank_company) |>
+    kable(
+        digits    = 3,
+        caption   = "Synthetic Control Results by Keepership — 2023 ULEZ Expansion",
+        col.names = c("Borough", "Rank (Company)", "p-value (Company)",
+                      "Rank (Private)", "p-value (Private)")
+    ) |>
+    kable_styling(bootstrap_options = c("striped", "hover"))
 ```
 
 ```{r}
