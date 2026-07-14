@@ -1,0 +1,24 @@
+---
+title: "Anticipatory Behavioural Responses to Environmental Policy Announcements: Evidence from the London Ultra Low Emission Zone"
+author: "Candidate 68508"
+date: today
+abstract: |
+    This dissertation examines whether the 2023 London Ultra Low Emission Zone (ULEZ) expansion generated anticipatory vehicle compliance before implementation. Using synthetic control methods applied to a panel of 52 study units - 33 London boroughs and 19 never-treated surrounding districts - this study examines three successive ULEZ expansions (2019, 2021, 2023). This study finds evidence of anticipatory compliance in specific boroughs for the 2019 and 2023 expansions. Tower Hamlets show significant anticipatory compliance following the 2019 announcement (p=0.038). For the 2023 expansion, Barkin and Dagenham, Hillingdom, and Sutton show significant effects (p=0.05) when using surrounding never-treated districts as the donor pool. The aggregate null result for the 2023 expansion is explained by spillover diffusion from earlier expansions - surrounding districts began adopting ULEVs simultaneously with outer London after the 2019 announcement, making the 2023 announcement informationally redundant. Compliance is primarily driven by company fleet decisions rather than private purchasing. These findings suggest that policy announcements function as instruments when they contain genuinely new information, and that effectiveness of successive announcements diminishes as prior expansions diffuse compliance behaviour across the broader urban area.
+format:
+    pdf:
+        documentclass: article
+        fontsize: 12pt
+        geometry: margin=2.5cm
+        number-sections: true
+        fig-cap-location: bottom
+        tbl-cap-location: top
+        keep-tex: false
+        include-in-header: 
+            text: |
+                \usepackage{booktabs}
+                \usepackage{float}
+                \floatplacement{figure}{H}
+                \floatplacement{table}{H}
+# bibliography: refrences.bib
+# csl: harvard.csl
+---
