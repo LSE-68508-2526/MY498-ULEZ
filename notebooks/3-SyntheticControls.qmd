@@ -66,14 +66,10 @@ print(treated_2019)
 #| label: synth-2019
 #| message: false
 
-# Filter panel to 2019 expansion window
-# Announcement: ~2017 Q1, Implementation: 2019 Q2
-# Window: 2011 Q4 to 2021 Q3 (before 2021 expansion)
 panel_2019 <- panel_synth |>
     filter(yq <= as.yearqtr("2021 Q3")) |>
     filter(la_name %in% c(treated_2019, donor_2019))
 
-# Function to run synthetic control for a single unit
 run_synth_2019 <- function(borough) {
     data_filtered <- panel_2019 |>
         filter(la_name %in% donor_2019 | la_name == borough)
@@ -85,18 +81,20 @@ run_synth_2019 <- function(borough) {
                 unit              = la_name,
                 time              = time_num,
                 i_unit            = borough,
-                i_time            = 2017.0,
+                i_time            = 2017.25,
                 generate_placebos = TRUE
             ) |>
             generate_predictor(
-                time_window   = 2014.0:2017.0,
+                time_window   = seq(2014.0, 2017.25, by = 0.25),
                 mean_ulev_pre = mean(ulev_share)
             ) |>
             generate_predictor(
-                time_window = 2016.75,
+                time_window = 2017.0,
                 ulev_pre    = ulev_share
             ) |>
-            generate_weights(optimization_window = 2014.0:2017.0) |>
+            generate_weights(
+                optimization_window = seq(2014.0, 2017.25, by = 0.25)
+            ) |>
             generate_control(),
         error = function(e) {
             message("Failed for ", borough, ": ", conditionMessage(e))
@@ -115,23 +113,30 @@ map_chr(synth_2019_list, ~ if (is.null(.x)) "FAILED" else "OK")
 #| label: sig-2019
 #| message: false
 
+# Significance for the 2017 Q2 announcement specification
+
 sig_2019 <- map_dfr(
     names(synth_2019_list),
-    ~ synth_2019_list[[.x]] |>
-        grab_significance() |>
-        filter(unit_name == .x) |>
-        mutate(borough = .x)
+    ~ {
+        obj <- synth_2019_list[[.x]]
+        if (is.null(obj)) return(NULL)
+        obj |>
+            grab_significance() |>
+            filter(unit_name == .x) |>
+            mutate(borough = .x)
+    }
 )
 
 sig_2019 |>
     select(borough, rank, mspe_ratio, fishers_exact_pvalue) |>
     arrange(rank) |>
     kable(
-        digits  = 3,
-        caption = "Synthetic Control Results — 2019 ULEZ Expansion",
-        col.names = c("Borough", "Rank", "MSPE Ratio", "p-value")
+        digits    = 3,
+        caption   = "Synthetic Control Results — 2019 ULEZ Expansion",
+        col.names = c("Borough", "Rank", "MSPE Ratio", "p-value"),
+        booktabs  = TRUE
     ) |>
-    kable_styling(bootstrap_options = c("striped", "hover"))
+    kable_styling(latex_options = c("striped", "hold_position"))
 ```
 
 ```{r}
@@ -143,11 +148,11 @@ plots_2019_all <- map2(
     names(synth_2019_list),
     ~ .x |>
         plot_trends() +
-        geom_vline(xintercept = 2017.0,
+        geom_vline(xintercept = 2017.25,
                    linetype = "dashed", colour = "black", linewidth = 0.6) +
         geom_vline(xintercept = 2019.25,
                    linetype = "dashed", colour = "red", linewidth = 0.6) +
-        annotate("text", x = 2017.0, y = Inf,
+        annotate("text", x = 2017.25, y = Inf,
                  vjust = 1.5, hjust = -0.1, size = 2, colour = "black",
                  label = "Ann.") +
         annotate("text", x = 2019.25, y = Inf,
@@ -171,7 +176,7 @@ wrap_plots(plots_2019_all, ncol = 2)
 
 p_trends <- synth_2019_list[["Tower Hamlets"]] |>
     plot_trends() +
-    geom_vline(xintercept = 2017.0, linetype = "dashed", colour = "red") +
+    geom_vline(xintercept = 2017.25, linetype = "dashed", colour = "red") +
     labs(
         title    = "Synthetic Control: Tower Hamlets — 2019 ULEZ Expansion",
         subtitle = "Actual vs synthetic ULEV compliance share",
@@ -181,7 +186,7 @@ p_trends <- synth_2019_list[["Tower Hamlets"]] |>
 
 p_placebo <- synth_2019_list[["Tower Hamlets"]] |>
     plot_placebos() +
-    geom_vline(xintercept = 2017.0, linetype = "dashed", colour = "red") +
+    geom_vline(xintercept = 2017.25, linetype = "dashed", colour = "red") +
     labs(
         title = "Placebo Test: Tower Hamlets — 2019 ULEZ Expansion",
         x     = "Quarter", y = "Gap in ULEV share"
@@ -218,14 +223,19 @@ print(treated_2021)
 #| label: synth-2021
 #| message: false
 
-# Filter panel to 2021 expansion window
-# Announcement: ~2019 Q2, Implementation: 2021 Q4
-# Window: 2011 Q4 to 2023 Q2 (before 2023 expansion)
+# ROBUSTNESS specification for the 2021 wave (2017 Q2 announcement date).
+# The 2021 inner-London expansion was first floated in the 4 April 2017 mayoral
+# proposal (i_time = 2017.25), alongside the central zone. This spec dates the
+# announcement to that first public signal. It is retained as a robustness
+# check only. The PRIMARY specification (below) instead dates the announcement
+# to the 8 June 2018 formal confirmation, following the dissertation's rule of
+# dating each expansion to its formal confirmation after public consultation.
+# Window: 2011 Q4 to 2023 Q2 (ends before the 2023 expansion).
 panel_2021 <- panel_synth |>
     filter(yq <= as.yearqtr("2023 Q2")) |>
     filter(la_name %in% c(treated_2021, donor_2021))
 
-run_synth_2021 <- function(borough) {
+run_synth_2021_2017 <- function(borough) {
     data_filtered <- panel_2021 |>
         filter(la_name %in% donor_2021 | la_name == borough)
     
@@ -236,18 +246,20 @@ run_synth_2021 <- function(borough) {
                 unit              = la_name,
                 time              = time_num,
                 i_unit            = borough,
-                i_time            = 2019.25,
+                i_time            = 2017.25,
                 generate_placebos = TRUE
             ) |>
             generate_predictor(
-                time_window   = 2016.0:2019.25,
+                time_window   = seq(2014.0, 2017.25, by = 0.25),
                 mean_ulev_pre = mean(ulev_share)
             ) |>
             generate_predictor(
-                time_window = 2019.0,
+                time_window = 2017.0,
                 ulev_pre    = ulev_share
             ) |>
-            generate_weights(optimization_window = 2016.0:2019.25) |>
+            generate_weights(
+                optimization_window = seq(2014.0, 2017.25, by = 0.25)
+            ) |>
             generate_control(),
         error = function(e) {
             message("Failed for ", borough, ": ", conditionMessage(e))
@@ -256,16 +268,71 @@ run_synth_2021 <- function(borough) {
     )
 }
 
-synth_2021_list <- map(treated_2021, run_synth_2021)
-names(synth_2021_list) <- treated_2021
+synth_2021_2017_list <- map(treated_2021, run_synth_2021_2017)
+names(synth_2021_2017_list) <- treated_2021
 
-map_chr(synth_2021_list, ~ if (is.null(.x)) "FAILED" else "OK")
+map_chr(synth_2021_2017_list, ~ if (is.null(.x)) "FAILED" else "OK")
+```
+
+  ```{r}
+# =============================================================================
+# 2021 expansion — PRIMARY specification: 2018 Q2 announcement date
+# The 2021 expansion was formally confirmed on 8 June 2018 (i_time = 2018.25).
+# This is the primary date under the dissertation's rule of dating each
+# expansion to its formal confirmation following public consultation, matching
+# the treatment of the 2023 wave (25 November 2022 confirmation). The 2017 Q2
+# first-signal date is retained above as a robustness check.
+# =============================================================================
+
+run_synth_2021_2018 <- function(borough) {
+    data_filtered <- panel_2021 |>
+        filter(la_name %in% donor_2021 | la_name == borough)
+    
+    tryCatch(
+        data_filtered |>
+            synthetic_control(
+                outcome           = ulev_share,
+                unit              = la_name,
+                time              = time_num,
+                i_unit            = borough,
+                i_time            = 2018.25,
+                generate_placebos = TRUE
+            ) |>
+            generate_predictor(
+                time_window   = seq(2015.0, 2018.25, by = 0.25),
+                mean_ulev_pre = mean(ulev_share)
+            ) |>
+            generate_predictor(
+                time_window = 2018.0,
+                ulev_pre    = ulev_share
+            ) |>
+            generate_weights(
+                optimization_window = seq(2015.0, 2018.25, by = 0.25)
+            ) |>
+            generate_control(),
+        error = function(e) {
+            message("Failed for ", borough, ": ", conditionMessage(e))
+            NULL
+        }
+    )
+}
+
+synth_2021_2018_list <- map(treated_2021, run_synth_2021_2018)
+names(synth_2021_2018_list) <- treated_2021
+
+map_chr(synth_2021_2018_list, ~ if (is.null(.x)) "FAILED" else "OK")
+
+# Primary 2021 objects point at the 2018 Q2 (formal-confirmation) specification.
+# Downstream chunks (significance, plots, summary table) read synth_2021_list.
+synth_2021_list <- synth_2021_2018_list
 ```
 
 ```{r}
 #| label: sig-2021
 #| message: false
 
+# Primary significance table for the 2021 wave (2018 Q2 formal-confirmation
+# specification; synth_2021_list now aliases the 2018 Q2 objects).
 sig_2021 <- map_dfr(
     names(synth_2021_list),
     ~ synth_2021_list[[.x]] |>
@@ -279,8 +346,37 @@ sig_2021 |>
     arrange(rank) |>
     kable(
         digits    = 3,
-        caption   = "Synthetic Control Results — 2021 ULEZ Expansion",
+        caption   = "Synthetic Control Results — 2021 ULEZ Expansion (2018 Q2 announcement)",
         col.names = c("Borough", "Rank", "MSPE Ratio", "p-value")
+    )
+```
+
+```{r}
+# Significance for the 2017 Q2 first-signal specification (robustness check)
+sig_2021_2017 <- map_dfr(
+    names(synth_2021_2017_list),
+    ~ synth_2021_2017_list[[.x]] |>
+        grab_significance() |>
+        filter(unit_name == .x) |>
+        mutate(borough = .x)
+)
+
+# Compare primary (2018 Q2) against robustness (2017 Q2) side by side
+sig_2021 |>
+    select(borough, rank, fishers_exact_pvalue) |>
+    rename(rank_2018 = rank, pval_2018 = fishers_exact_pvalue) |>
+    left_join(
+        sig_2021_2017 |>
+            select(borough, rank, fishers_exact_pvalue) |>
+            rename(rank_2017 = rank, pval_2017 = fishers_exact_pvalue),
+        by = "borough"
+    ) |>
+    arrange(rank_2018) |>
+    kable(
+        digits    = 3,
+        caption   = "2021 Expansion: Sensitivity to Announcement Date (2018 Q2 primary vs 2017 Q2 robustness)",
+        col.names = c("Borough", "Rank (2018 Q2)", "p-value (2018 Q2)",
+                      "Rank (2017 Q2)", "p-value (2017 Q2)")
     )
 ```
 
@@ -288,16 +384,17 @@ sig_2021 |>
 #| label: plot-2021-all
 #| message: false
 
+# Primary 2021 plots (2018 Q2 announcement). synth_2021_list aliases 2018 Q2.
 plots_2021_all <- map2(
     synth_2021_list,
     names(synth_2021_list),
     ~ .x |>
         plot_trends() +
-        geom_vline(xintercept = 2019.25,
+        geom_vline(xintercept = 2018.25,
                    linetype = "dashed", colour = "black", linewidth = 0.6) +
         geom_vline(xintercept = 2021.75,
                    linetype = "dashed", colour = "red", linewidth = 0.6) +
-        annotate("text", x = 2019.25, y = Inf,
+        annotate("text", x = 2018.25, y = Inf,
                  vjust = 1.5, hjust = -0.1, size = 2, colour = "black",
                  label = "Ann.") +
         annotate("text", x = 2021.75, y = Inf,
@@ -315,6 +412,34 @@ plots_2021_all <- map2(
 wrap_plots(plots_2021_all, ncol = 2)
 ```
 
+```{r}
+# Robustness 2021 plots (2017 Q2 first-signal announcement)
+plots_2021_2017 <- map2(
+    synth_2021_2017_list,
+    names(synth_2021_2017_list),
+    ~ .x |>
+        plot_trends() +
+        geom_vline(xintercept = 2017.25,
+                   linetype = "dashed", colour = "black", linewidth = 0.6) +
+        geom_vline(xintercept = 2021.75,
+                   linetype = "dashed", colour = "red", linewidth = 0.6) +
+        annotate("text", x = 2017.25, y = Inf,
+                 vjust = 1.5, hjust = -0.1, size = 2, colour = "black",
+                 label = "Ann.") +
+        annotate("text", x = 2021.75, y = Inf,
+                 vjust = 1.5, hjust = -0.1, size = 2, colour = "red",
+                 label = "Imp.") +
+        labs(
+            title = .y,
+            x     = NULL,
+            y     = "ULEV share"
+        ) +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 8))
+)
+
+wrap_plots(plots_2021_2017, ncol = 2)
+```
 ```{r}
 #| label: setup-2023
 #| message: false
@@ -365,14 +490,16 @@ run_synth_2023 <- function(borough) {
                 generate_placebos = TRUE
             ) |>
             generate_predictor(
-                time_window   = 2019.0:2022.75,
+                time_window   = seq(2019.0, 2022.75, by = 0.25),
                 mean_ulev_pre = mean(ulev_share)
             ) |>
             generate_predictor(
                 time_window = 2022.0,
                 ulev_pre    = ulev_share
             ) |>
-            generate_weights(optimization_window = 2019.0:2022.75) |>
+            generate_weights(
+                optimization_window = seq(2019.0, 2022.75, by = 0.25)
+            ) |>
             generate_control(),
         error = function(e) {
             message("Failed for ", borough, ": ", conditionMessage(e))
@@ -441,9 +568,18 @@ plots_2023_all <- map2(
 #| label: plot-2023-significant
 #| message: false
 
-# Plot significant and near-significant boroughs only (p <= 0.10)
-sig_boroughs_2023 <- c("Barking and Dagenham", "Hillingdon", "Sutton",
-                        "Harrow", "Wandsworth")
+sig_boroughs_2023 <- sig_2023 |>
+    filter(fishers_exact_pvalue <= 0.10) |>
+    arrange(fishers_exact_pvalue) |>
+    pull(borough)
+
+if (length(sig_boroughs_2023) == 0) {
+    message("No boroughs at p <= 0.10; plotting the three lowest-p boroughs instead.")
+    sig_boroughs_2023 <- sig_2023 |>
+        arrange(fishers_exact_pvalue) |>
+        slice_head(n = 3) |>
+        pull(borough)
+}
 
 plots_2023_sig <- map2(
     synth_2023_list[sig_boroughs_2023],
@@ -470,16 +606,19 @@ plots_2023_sig <- map2(
 )
 
 wrap_plots(plots_2023_sig, ncol = 3)
+```
 
+```{r}
 #| label: plot-2023-trends-1
 #| message: false
 
-# First 10 boroughs — trends
 wrap_plots(plots_2023_all[1:10], ncol = 2)
+```
+
+```{r}
 #| label: plot-2023-trends-2
 #| message: false
 
-# Remaining 9 boroughs — trends
 wrap_plots(plots_2023_all[11:19], ncol = 2)
 ```
 
@@ -663,15 +802,18 @@ run_synth_2023_outcome <- function(borough, outcome_var) {
                 i_time            = 2022.75,
                 generate_placebos = TRUE
             ) |>
+            # CHANGED (bug 1b): colon windows -> seq(..., by = 0.25).
             generate_predictor(
-                time_window   = 2019.0:2022.75,
+                time_window   = seq(2019.0, 2022.75, by = 0.25),
                 mean_pre      = mean(!!sym(outcome_var))
             ) |>
             generate_predictor(
                 time_window = 2022.0,
                 pre_level   = !!sym(outcome_var)
             ) |>
-            generate_weights(optimization_window = 2019.0:2022.75) |>
+            generate_weights(
+                optimization_window = seq(2019.0, 2022.75, by = 0.25)
+            ) |>
             generate_control(),
         error = function(e) {
             message("Failed for ", borough, ": ", conditionMessage(e))
@@ -832,10 +974,11 @@ extract_summary <- function(synth_obj, borough, announce_time, implement_time) {
 }
 
 # 2019 expansion
+# CHANGED: announce_time 2017.0 -> 2017.25 to match corrected i_time.
 summary_2019 <- map_dfr(
     names(synth_2019_list),
     ~ extract_summary(synth_2019_list[[.x]], .x,
-                      announce_time  = 2017.0,
+                      announce_time  = 2017.25,
                       implement_time = 2019.25)
 ) |>
     left_join(sig_2019 |> select(borough, rank, fishers_exact_pvalue),
@@ -843,10 +986,12 @@ summary_2019 <- map_dfr(
     mutate(expansion = "2019")
 
 # 2021 expansion
+# announce_time = 2018.25 (8 June 2018 formal confirmation), matching the
+# primary specification. The anticipation window runs 2018 Q2 -> 2021 Q4.
 summary_2021 <- map_dfr(
     names(synth_2021_list),
     ~ extract_summary(synth_2021_list[[.x]], .x,
-                      announce_time  = 2019.25,
+                      announce_time  = 2018.25,
                       implement_time = 2021.75)
 ) |>
     left_join(sig_2021 |> select(borough, rank, fishers_exact_pvalue),
