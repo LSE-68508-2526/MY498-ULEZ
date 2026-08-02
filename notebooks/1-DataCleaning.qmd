@@ -369,8 +369,7 @@ study_sf <- study_sf |>
             lengths(st_within(centroids_sf, ulez_2023)) > 0,
             -dist_to_2023_km, dist_to_2023_km
         ),
-        treated = as.integer(rv_2021 > 0)
-    )
+        treated = as.integer(rv_2021 > 0 & str_starts(ons_code, "E09")))
 
 message("Treated boroughs (2023 expansion): ", sum(study_sf$treated))
 message("Control borough (inside 2021 zone): ", sum(study_sf$treated==0))

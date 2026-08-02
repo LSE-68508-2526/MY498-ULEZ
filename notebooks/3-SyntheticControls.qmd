@@ -24,6 +24,11 @@ library(kableExtra)
 
 Proc <- here("data", "processed")
 raw  <- here("data", "raw")
+figs <- here("figures")
+out  <- here("output")
+
+dir.create(figs, showWarnings = FALSE)
+dir.create(out,  showWarnings = FALSE)
 
 analysis_panel <- readRDS(file.path(Proc, "analysis_panel.rds"))
 study_sf       <- readRDS(file.path(Proc, "study_sf.rds"))
@@ -53,7 +58,7 @@ treated_2019 <- panel_synth |>
     pull(la_name)
 
 donor_2019 <- panel_synth |>
-    filter(rv_2019 > 0 | london == 0) |>
+    filter(london==0 | (rv_2019 >0 & rv_2021 > 0)) |>
     distinct(ons_code, la_name) |>
     pull(la_name)
 
@@ -127,6 +132,8 @@ sig_2019 <- map_dfr(
     }
 )
 
+saveRDS(sig_2019, file.path(out, "sig_2019.rds"))            # SECTION 5 + APPENDIX
+
 sig_2019 |>
     select(borough, rank, mspe_ratio, fishers_exact_pvalue) |>
     arrange(rank) |>
@@ -192,6 +199,13 @@ p_placebo <- synth_2019_list[["Tower Hamlets"]] |>
         x     = "Quarter", y = "Gap in ULEV share"
     ) +
     theme_minimal()
+
+# Saved separately: both are Section 5 figures, and the placebo panel
+# carries the inference logic that the p-value alone cannot show.
+ggsave(file.path(figs, "th_2019_trends.png"), p_trends,      # SECTION 5
+       width = 7, height = 4, dpi = 300)
+ggsave(file.path(figs, "th_2019_placebo.png"), p_placebo,    # SECTION 5
+       width = 7, height = 4, dpi = 300)
 
 p_trends / p_placebo
 ```
@@ -340,6 +354,8 @@ sig_2021 <- map_dfr(
         filter(unit_name == .x) |>
         mutate(borough = .x)
 )
+
+saveRDS(sig_2021, file.path(out, "sig_2021.rds"))            # APPENDIX
 
 sig_2021 |>
     select(borough, rank, mspe_ratio, fishers_exact_pvalue) |>
@@ -526,6 +542,8 @@ sig_2023 <- map_dfr(
         mutate(borough = .x)
 )
 
+saveRDS(sig_2023, file.path(out, "sig_2023.rds"))            # APPENDIX
+
 sig_2023 |>
     select(borough, rank, mspe_ratio, fishers_exact_pvalue) |>
     arrange(rank) |>
@@ -605,7 +623,12 @@ plots_2023_sig <- map2(
         theme(plot.title = element_text(size = 9))
 )
 
-wrap_plots(plots_2023_sig, ncol = 3)
+p_2023_sig <- wrap_plots(plots_2023_sig, ncol = min(3, length(plots_2023_sig)))
+
+ggsave(file.path(figs, "sc_2023_significant.png"), p_2023_sig,   # SECTION 5
+       width = 7, height = 3.5, dpi = 300)
+
+p_2023_sig
 ```
 
 ```{r}
@@ -857,7 +880,7 @@ sig_2023_private <- map_dfr(
         mutate(borough = .x)
 )
 
-sig_2023_company |>
+keepership_table <- sig_2023_company |>
     select(borough, rank, fishers_exact_pvalue) |>
     rename(rank_company = rank, pval_company = fishers_exact_pvalue) |>
     left_join(
@@ -866,14 +889,19 @@ sig_2023_company |>
             rename(rank_private = rank, pval_private = fishers_exact_pvalue),
         by = "borough"
     ) |>
-    arrange(rank_company) |>
+    arrange(rank_company)
+
+saveRDS(keepership_table, file.path(out, "keepership_table.rds"))   # SECTION 7
+
+keepership_table |>
     kable(
+        booktabs  = TRUE,
         digits    = 3,
         caption   = "Synthetic Control Results by Keepership — 2023 ULEZ Expansion",
         col.names = c("Borough", "Rank (Company)", "p-value (Company)",
                       "Rank (Private)", "p-value (Private)")
     ) |>
-    kable_styling(bootstrap_options = c("striped", "hover"))
+    kable_styling(latex_options = c("striped", "hold_position"))
 ```
 
 ```{r}
@@ -916,7 +944,7 @@ sig_2023_phev <- map_dfr(
 )
 
 # Combined table
-sig_2023_bev |>
+fuel_table <- sig_2023_bev |>
     select(borough, rank, fishers_exact_pvalue) |>
     rename(rank_bev = rank, pval_bev = fishers_exact_pvalue) |>
     left_join(
@@ -925,8 +953,13 @@ sig_2023_bev |>
             rename(rank_phev = rank, pval_phev = fishers_exact_pvalue),
         by = "borough"
     ) |>
-    arrange(rank_bev) |>
+    arrange(rank_bev)
+
+saveRDS(fuel_table, file.path(out, "fuel_table.rds"))               # SECTION 7
+
+fuel_table |>
     kable(
+        booktabs  = TRUE,
         digits    = 3,
         caption   = "Synthetic Control Results by Fuel Type — 2023 ULEZ Expansion",
         col.names = c("Borough", "Rank (BEV)", "p-value (BEV)",
@@ -1027,9 +1060,12 @@ results_table <- bind_rows(summary_2019, summary_2021, summary_2023) |>
            post_gap, rank, fishers_exact_pvalue, significant, direction) |>
     arrange(expansion, rank)
 
+saveRDS(results_table, file.path(out, "results_table.rds"))  # SECTION 5 + APPENDIX
+
 results_table |>
     kable(
         digits    = 4,
+        booktabs  = TRUE,
         caption   = "Synthetic Control Results — All Three ULEZ Expansions",
         col.names = c("Expansion", "Borough", "Pre-MSPE", 
                       "Anticipation Gap", "Post-Ann. Gap",
