@@ -211,6 +211,73 @@ p_trends / p_placebo
 ```
 
 ```{r}
+#| label: synth-2019-alt-date
+#| message: false
+
+# Robustness: 2019 wave dated to the 3 November 2017 confirmation (2017 Q4)
+# rather than the 4 April 2017 acceleration announcement (2017 Q2).
+# Mirrors the 2021 wave's alternative-date check, so both waves are tested
+# under the other's dating standard.
+
+run_synth_2019_alt <- function(borough) {
+    data_filtered <- panel_2019 |>
+        filter(la_name %in% donor_2019 | la_name == borough)
+    tryCatch(
+        data_filtered |>
+            synthetic_control(
+                outcome = ulev_share, unit = la_name, time = time_num,
+                i_unit = borough, i_time = 2017.75,
+                generate_placebos = TRUE
+            ) |>
+            generate_predictor(
+                time_window   = seq(2014.0, 2017.75, by = 0.25),
+                mean_ulev_pre = mean(ulev_share)
+            ) |>
+            generate_predictor(time_window = 2017.5, ulev_pre = ulev_share) |>
+            generate_weights(
+                optimization_window = seq(2014.0, 2017.75, by = 0.25)
+            ) |>
+            generate_control(),
+        error = function(e) {
+            message("Failed for ", borough, ": ", conditionMessage(e)); NULL
+        }
+    )
+}
+
+synth_2019_alt_list <- map(treated_2019, run_synth_2019_alt)
+names(synth_2019_alt_list) <- treated_2019
+
+sig_2019_alt <- map_dfr(names(synth_2019_alt_list), ~ {
+    obj <- synth_2019_alt_list[[.x]]
+    if (is.null(obj)) return(NULL)
+    obj |> grab_significance() |> filter(unit_name == .x) |> mutate(borough = .x)
+})
+
+saveRDS(sig_2019_alt, file.path(out, "sig_2019_alt.rds"))
+```
+
+```{r}
+sig_2019 |>
+    select(borough, rank, fishers_exact_pvalue) |>
+    rename(rank_q2 = rank, pval_q2 = fishers_exact_pvalue) |>
+    left_join(
+        sig_2019_alt |>
+            select(borough, rank, fishers_exact_pvalue) |>
+            rename(rank_q4 = rank, pval_q4 = fishers_exact_pvalue),
+        by = "borough"
+    ) |>
+    arrange(rank_q2) |>
+    kable(
+        digits    = 3,
+        booktabs  = TRUE,
+        caption   = "2019 Expansion: Sensitivity to Announcement Date (2017 Q2 primary vs 2017 Q4 robustness)",
+        col.names = c("Borough", "Rank (2017 Q2)", "p-value (2017 Q2)",
+                      "Rank (2017 Q4)", "p-value (2017 Q4)")
+    ) |>
+    kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+```{r}
 #| label: setup-2021
 #| message: false
 
