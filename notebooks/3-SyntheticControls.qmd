@@ -185,8 +185,8 @@ p_trends <- synth_2019_list[["Tower Hamlets"]] |>
     plot_trends() +
     geom_vline(xintercept = 2017.25, linetype = "dashed", colour = "red") +
     labs(
-        title    = "Synthetic Control: Tower Hamlets — 2019 ULEZ Expansion",
-        subtitle = "Actual vs synthetic ULEV compliance share",
+        title    = NULL,
+        subtitle = NULL,
         x        = "Quarter", y = "ULEV share"
     ) +
     theme_minimal()
@@ -208,73 +208,6 @@ ggsave(file.path(figs, "th_2019_placebo.png"), p_placebo,    # SECTION 5
        width = 7, height = 4, dpi = 300)
 
 p_trends / p_placebo
-```
-
-```{r}
-#| label: synth-2019-alt-date
-#| message: false
-
-# Robustness: 2019 wave dated to the 3 November 2017 confirmation (2017 Q4)
-# rather than the 4 April 2017 acceleration announcement (2017 Q2).
-# Mirrors the 2021 wave's alternative-date check, so both waves are tested
-# under the other's dating standard.
-
-run_synth_2019_alt <- function(borough) {
-    data_filtered <- panel_2019 |>
-        filter(la_name %in% donor_2019 | la_name == borough)
-    tryCatch(
-        data_filtered |>
-            synthetic_control(
-                outcome = ulev_share, unit = la_name, time = time_num,
-                i_unit = borough, i_time = 2017.75,
-                generate_placebos = TRUE
-            ) |>
-            generate_predictor(
-                time_window   = seq(2014.0, 2017.75, by = 0.25),
-                mean_ulev_pre = mean(ulev_share)
-            ) |>
-            generate_predictor(time_window = 2017.5, ulev_pre = ulev_share) |>
-            generate_weights(
-                optimization_window = seq(2014.0, 2017.75, by = 0.25)
-            ) |>
-            generate_control(),
-        error = function(e) {
-            message("Failed for ", borough, ": ", conditionMessage(e)); NULL
-        }
-    )
-}
-
-synth_2019_alt_list <- map(treated_2019, run_synth_2019_alt)
-names(synth_2019_alt_list) <- treated_2019
-
-sig_2019_alt <- map_dfr(names(synth_2019_alt_list), ~ {
-    obj <- synth_2019_alt_list[[.x]]
-    if (is.null(obj)) return(NULL)
-    obj |> grab_significance() |> filter(unit_name == .x) |> mutate(borough = .x)
-})
-
-saveRDS(sig_2019_alt, file.path(out, "sig_2019_alt.rds"))
-```
-
-```{r}
-sig_2019 |>
-    select(borough, rank, fishers_exact_pvalue) |>
-    rename(rank_q2 = rank, pval_q2 = fishers_exact_pvalue) |>
-    left_join(
-        sig_2019_alt |>
-            select(borough, rank, fishers_exact_pvalue) |>
-            rename(rank_q4 = rank, pval_q4 = fishers_exact_pvalue),
-        by = "borough"
-    ) |>
-    arrange(rank_q2) |>
-    kable(
-        digits    = 3,
-        booktabs  = TRUE,
-        caption   = "2019 Expansion: Sensitivity to Announcement Date (2017 Q2 primary vs 2017 Q4 robustness)",
-        col.names = c("Borough", "Rank (2017 Q2)", "p-value (2017 Q2)",
-                      "Rank (2017 Q4)", "p-value (2017 Q4)")
-    ) |>
-    kable_styling(latex_options = c("striped", "hold_position"))
 ```
 
 ```{r}
@@ -355,7 +288,10 @@ names(synth_2021_2017_list) <- treated_2021
 map_chr(synth_2021_2017_list, ~ if (is.null(.x)) "FAILED" else "OK")
 ```
 
-  ```{r}
+```{r}
+#| label: synth-2021-primary
+#| message: false
+
 # =============================================================================
 # 2021 expansion — PRIMARY specification: 2018 Q2 announcement date
 # The 2021 expansion was formally confirmed on 8 June 2018 (i_time = 2018.25).
@@ -653,19 +589,6 @@ plots_2023_all <- map2(
 #| label: plot-2023-significant
 #| message: false
 
-sig_boroughs_2023 <- sig_2023 |>
-    filter(fishers_exact_pvalue <= 0.10) |>
-    arrange(fishers_exact_pvalue) |>
-    pull(borough)
-
-if (length(sig_boroughs_2023) == 0) {
-    message("No boroughs at p <= 0.10; plotting the three lowest-p boroughs instead.")
-    sig_boroughs_2023 <- sig_2023 |>
-        arrange(fishers_exact_pvalue) |>
-        slice_head(n = 3) |>
-        pull(borough)
-}
-
 plots_2023_sig <- map2(
     synth_2023_list[sig_boroughs_2023],
     sig_boroughs_2023,
@@ -675,24 +598,19 @@ plots_2023_sig <- map2(
                    linetype = "dashed", colour = "black", linewidth = 0.6) +
         geom_vline(xintercept = 2023.5,
                    linetype = "dashed", colour = "red", linewidth = 0.6) +
-        annotate("text", x = 2022.75, y = Inf,
-                 vjust = 1.5, hjust = -0.1, size = 2.5, colour = "black",
-                 label = "Ann.") +
-        annotate("text", x = 2023.5, y = Inf,
-                 vjust = 1.5, hjust = -0.1, size = 2.5, colour = "red",
-                 label = "Imp.") +
-        labs(
-            title = .y,
-            x     = NULL,
-            y     = "ULEV share"
-        ) +
+        coord_cartesian(xlim = c(2018, 2025)) +
+        labs(title = .y, subtitle = NULL, caption = NULL,
+             x = NULL, y = "ULEV share") +
         theme_minimal() +
-        theme(plot.title = element_text(size = 9))
+        theme(plot.title = element_text(size = 10))
 )
 
-p_2023_sig <- wrap_plots(plots_2023_sig, ncol = min(3, length(plots_2023_sig)))
+p_2023_sig <- wrap_plots(plots_2023_sig,
+                         ncol = min(3, length(plots_2023_sig))) +
+    plot_layout(guides = "collect") &
+    theme(legend.position = "bottom")
 
-ggsave(file.path(figs, "sc_2023_significant.png"), p_2023_sig,   # SECTION 5
+ggsave(file.path(figs, "sc_2023_significant.png"), p_2023_sig,
        width = 7, height = 3.5, dpi = 300)
 
 p_2023_sig
@@ -1081,7 +999,7 @@ summary_2019 <- map_dfr(
                       announce_time  = 2017.25,
                       implement_time = 2019.25)
 ) |>
-    left_join(sig_2019 |> select(borough, rank, fishers_exact_pvalue),
+    left_join(sig_2019 |> select(borough, rank, mspe_ratio, fishers_exact_pvalue),
               by = "borough") |>
     mutate(expansion = "2019")
 
@@ -1094,7 +1012,7 @@ summary_2021 <- map_dfr(
                       announce_time  = 2018.25,
                       implement_time = 2021.75)
 ) |>
-    left_join(sig_2021 |> select(borough, rank, fishers_exact_pvalue),
+    left_join(sig_2021 |> select(borough, rank, mspe_ratio, fishers_exact_pvalue),
               by = "borough") |>
     mutate(expansion = "2021")
 
@@ -1105,7 +1023,7 @@ summary_2023 <- map_dfr(
                       announce_time  = 2022.75,
                       implement_time = 2023.5)
 ) |>
-    left_join(sig_2023 |> select(borough, rank, fishers_exact_pvalue),
+    left_join(sig_2023 |> select(borough, rank, mspe_ratio, fishers_exact_pvalue),
               by = "borough") |>
     mutate(expansion = "2023")
 
@@ -1124,10 +1042,15 @@ results_table <- bind_rows(summary_2019, summary_2021, summary_2023) |>
         )
     ) |>
     select(expansion, borough, pre_mspe, anticipation_gap, 
-           post_gap, rank, fishers_exact_pvalue, significant, direction) |>
+           post_gap, mspe_ratio, rank, fishers_exact_pvalue,
+           significant, direction) |>
     arrange(expansion, rank)
 
-saveRDS(results_table, file.path(out, "results_table.rds"))  # SECTION 5 + APPENDIX
+saveRDS(results_table, file.path(out, "results_table.rds"))          # APPENDIX
+
+# Trimmed version for the main body: significant and near-significant only
+saveRDS(results_table |> filter(fishers_exact_pvalue <= 0.20),
+        file.path(out, "results_table_main.rds"))                   # SECTION 5
 
 results_table |>
     kable(
@@ -1135,7 +1058,7 @@ results_table |>
         booktabs  = TRUE,
         caption   = "Synthetic Control Results — All Three ULEZ Expansions",
         col.names = c("Expansion", "Borough", "Pre-MSPE", 
-                      "Anticipation Gap", "Post-Ann. Gap",
+                      "Anticipation Gap", "Post-Ann. Gap", "MSPE Ratio",
                       "Rank", "p-value", "", "Direction")
     )
 ```
