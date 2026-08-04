@@ -148,7 +148,7 @@ In addition to the vehicle licensing data, the panel includes several socio-econ
 The empirical analysis dates each ULEZ expansion to the point at which its implementation became a credible and firm policy commitment rather than to the date on which charging commenced. This approach follows directly from the theoretical framework developed in Section 3. If forward-looking agents respond to credible announcements of future regulatory costs, then behavioural adjustment should begin once implementation becomes certain, not when the policy is implemented. Accordingly, the treatment date for each expansion is defined as the earliest point at which the public could reasonably regard the expansion as a committed policy rather than a proposal subject to revision.
 
 | ULEZ Expansion | Treatment Date | Rationale |
-|:-----------------|:-----------------|:------------------------------------|
+|:-----------------|:-----------------|:----------------------------------|
 | Central London (2019) | 2017 Q2 (4 April 2017) | The central ULEZ had already been confirmed under the previous Mayor in March 2015 for implementation in 2020. The April 2017 announcement brought the implementation date forward to April 2019, altering the timing of an already-committed policy rather than creating a new commitment. |
 | Inner London (2021) | 2018 Q2 (8 June 2018) | The same April 2017 announcement set out an intended extension to the North and South Circular roads, but implementation remained subject to statutory consultation. The policy became a firm commitment only when the expansion was formally confirmed following that consultation. |
 | Outer London (2023) | 2022 Q4 (25 November 2022) | The March 2022 consultation proposed a London-wide expansion, with implementation contingent on the statutory consultation process. The confirmed decision of 25 November 2022 represents the point at which the expansion became a credible commitment. |
@@ -170,7 +170,7 @@ Because this dissertation studies anticipatory responses to policy announcements
 The resulting donor pools differ across the three ULEZ expansions.
 
 | Expansion | Donor Pool Size | Composition |
-|:----------------|:----------------|:-------------------------------------|
+|:-----------------|:-----------------|:-----------------------------------|
 | 2019 | 38 | 19 surrounding districts + 19 outer London boroughs |
 | 2021 | 38 | 19 surrounding districts + 19 outer London boroughs |
 | 2023 | 19 | 19 surrounding districts |
@@ -272,6 +272,42 @@ As noted in Section 4.4, the estimated effects represent divergences relative to
 Across the three expansion waves, the synthetic control estimates show differing patterns of anticipatory response. The 2019 central expansion provides the strongest evidence, although the Tower Hamlets estimate remains marginal under the placebo distribution. The 2021 inner expansion produces no statistically significant effects across the treated boroughs, while the 2023 London-wide expansion identifies significant results for Hillingdon and Sutton alongside an aggregate null across the remaining boroughs. Estimated effects are modest throughout, with the largest anticipation gap among the significant cases below one percentage point of the licensed fleet. This pattern is consistent with the prediction in Section 3.1 that responses would be partial and heterogeneous rather than uniform. Section 6 assesses the robustness of these estimates, while Section 8 returns to their interpretation.
 
 # Robustness Checks
+
+This section assesses whether the synthetic control findings are robust to alternative identification strategies and modelling assumptions. Robustness analyses focus on the 2023 London-wide expansion because the estimation panel used for these specifications begins in 2019 Q1, placing both the April 2017 announcement and the June 2018 confirmation outside the estimation window. The exception is the alternative announcement date analysis, which re-estimates the 2019 and 2021 expansions under different treatment timings.
+
+@tbl-twfe-models compares two-way fixed effects (TWFE) estimates under alternative comparison groups. The naive specification compares outer London boroughs with inner London boroughs, controlling for borough and quarter fixed effects with standard errors clustered at the borough level. This specification produces a negative treatment coefficient of −0.032, significant at the 10% level, with a within-$R^2$ of 0.10. Allowing for differential linear trends reduces the level coefficient to −0.007 and renders it insignificant, while the differential trend itself is estimated at −0.0021 and is significant at the 10% level.
+
+```{r}
+#| label: tbl-twfe-models
+#| tbl-cap: "Two-way fixed effects estimates of the 2023 announcement effect under alternative comparison groups. The naive specifications use inner London boroughs as controls; the preferred specifications use never-treated surrounding districts."
+#| echo: false
+#| warning: false
+
+m <- readRDS(here("output", "twfe_models.rds"))
+
+modelsummary(
+    list("Naive"            = m$naive,
+         "Preferred"        = m$preferred,
+         "Naive + trends"   = m$naive_trends,
+         "Preferred + trends" = m$preferred_trends),
+    stars   = c("*" = 0.1, "**" = 0.05, "***" = 0.01),
+    gof_map = c("nobs", "adj.r.squared", "rmse"),
+    output  = "kableExtra"
+) |>
+    kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+The preferred specification instead compares outer London boroughs with the surrounding districts that were never treated by the ULEZ. Under this comparison the estimated treatment effect falls to −0.004 and is no longer statistically significant, while the within-$R^2$ declines to 0.002. Likewise, the differential trend estimate decreases to −0.0005 and is statistically indistinguishable from zero.
+
+This contrast demonstrates that the apparent treatment effect in the naive specification is driven by the use of inner London boroughs as controls, despite their earlier exposure to the ULEZ expansions. The decline in within-$R^2$ from 0.10 to 0.002 indicates that the treatment indicator explains almost none of the residual variation once never-treated comparison units are used. This provides direct empirical support for the comparison group construction adopted in Section 4.3 and illustrates the contamination problem discussed in Section 3.3. The preferred TWFE estimate of −0.004 is also consistent with the aggregate null identified by the synthetic control analysis for the 2023 expansion, with two independent estimators reaching the same conclusion.
+
+The event study provides a further assessment of the identifying assumptions underlying the 2023 analysis. The specification estimates dynamic treatment effects using relative-time indicators, with borough and quarter fixed effects, a house price control, and surrounding never-treated districts as the comparison group. Two pre-treatment periods are omitted as references, since with a single announcement date the full set of relative-time interactions is otherwise collinear with the borough fixed effects. Across the pre-announcement period, estimated coefficients range from +0.0007 to −0.0053, with all confidence intervals overlapping zero, providing no evidence of differential pre-treatment trends between outer London and the surrounding districts. Following the announcement, estimated effects remain flat, varying between approximately −0.004 and −0.006, with no statistically significant coefficients and no visible discontinuity at the announcement date (@fig-event-study).
+
+![Event study estimates of the 2023 announcement effect, outer London relative to never-treated surrounding districts. Coefficients are flat across both the pre- and post-announcement periods, with all confidence intervals covering zero.](figures/event_study.png){#fig-event-study width="90%"}
+
+Interrupted time series models yield a similar conclusion. In the preferred difference-in-differences interrupted time series specification, which compares outer London with surrounding districts, the common post-announcement level shift (+0.0221) and trend change (+0.0154) are both positive and highly statistically significant, indicating a substantial acceleration in ULEV share from 2022 Q4 onwards. However, neither differential treatment parameter is statistically significant: the interaction between outer London and the post-announcement period is −0.0051 (p = 0.32), while the interaction with the post-announcement trend is −0.0008 (p = 0.84). The acceleration is therefore common to treated boroughs and surrounding districts rather than specific to outer London. This provides the empirical basis for the scope condition set out in Section 4.4: the surrounding districts did not remain static, and any response they shared with outer London is removed by the synthetic control estimator. By comparison, a simple three-group interrupted time series cannot distinguish treatment effects from common shocks, with inner London, unaffected by the 2023 expansion, exhibiting the largest estimated level shift (+0.039). For this reason, the difference-in-differences interrupted time series provides the more informative robustness check.
+
+Alternative announcement dates provide a further check that the findings are not driven by the treatment timing adopted in Section 4.2. Re-estimating the 2019 expansion using the November 2017 confirmation date produces substantively identical results. Tower Hamlets remains the strongest treated borough, ranking third within the placebo distribution with a permutation p-value of 0.077. Its post-/pre-treatment MSPE ratio increases from 753 under the primary specification to 1201, reflecting the two additional pre-treatment quarters rather than stronger evidence of an anticipatory response. Re-estimating the 2021 expansion using the April 2017 announcement likewise leaves the overall conclusions unchanged. No borough reaches conventional levels of statistical significance, although Newham becomes the closest case (p = 0.077), replacing Hammersmith and Fulham (p = 0.154). The consistency of these results indicates that the principal findings are not sensitive to the announcement date convention adopted in the main analysis.^[Westminster failed to converge under the alternative 2019 specification, owing to a singular matrix in the optimisation. It ranks 30th under the primary specification and is far from conventional significance. Placebo distributions comprise 39 units under both specifications, so the reported p-values are directly comparable.]
 
 # Heterogeneity Analysis
 

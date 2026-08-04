@@ -263,12 +263,12 @@ p_event_study <- ggplot(es_coefs, aes(x = t, y = estimate, colour = spec, fill =
         "With surrounding districts"   = "firebrick"
     )) +
     labs(
-        title    = "Event Study: ULEV Compliance Share",
-        subtitle = "Treated = outer London boroughs | Reference period = t−1",
+        title    = NULL,
+        subtitle = NULL,
         x        = "Quarters relative to announcement (2022 Q4 = 0)",
         y        = "Estimated coefficient",
         colour   = NULL, fill = NULL,
-        caption  = "SEs clustered by borough. Borough and quarter FE. Control: log house price."
+        caption  = NULL
     ) +
     theme_minimal() +
     theme(legend.position = "bottom")
