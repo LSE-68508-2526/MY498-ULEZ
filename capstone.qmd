@@ -527,7 +527,11 @@ readRDS(here("output", "rdd_table.rds")) |>
     kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
 ```
 
-## G. Supplementary figures {.unnumbered}
+## G. Data sources and replication {.unnumbered}
+
+All code used to construct the panel, estimate the synthetic controls, and produce the tables and figures in this dissertation is available at [https://github.com/LSE-68508-2526/MY498-ULEZ](https://github.com/LSE-68508-2526/MY498-ULEZ).
+
+## H. Supplementary figures {.unnumbered}
 
 ![Mean ULEV share by group across the full panel period, 2011 Q4 to 2024 Q4. Dashed lines mark the November 2022 announcement and the August 2023 implementation.](figures/raw_trends.png){#fig-app-trends width="90%"}
 
@@ -539,6 +543,3 @@ readRDS(here("output", "rdd_table.rds")) |>
 
 ![ULEV share disaggregated by fuel type across the three groups.](figures/disagg_fuel.png){#fig-app-fuel width="90%"}
 
-## H. Data sources and replication {.unnumbered}
-
-All code used to construct the panel, estimate the synthetic controls, and produce the tables and figures in this dissertation is available at [https://github.com/username/repository](https://github.com/username/repository).
