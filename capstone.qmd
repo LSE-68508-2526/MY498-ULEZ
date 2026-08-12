@@ -408,3 +408,137 @@ The central conclusion is that a credible announcement can move behaviour before
 \newpage
 
 # References {.unnumbered}
+::: {#refs}
+:::
+
+\newpage
+
+# Appendix {.unnumbered}
+
+## A. Study units {.unnumbered}
+The 19 surrounding district authorities included in the panel, selected by the two-kilometre proximity rule described in Section 4.1: Brentwood, Broxbourne, Buckinghamshire, Dartford, Elmbridge, Epping Forest, Epsom and Ewell, Hertsmere, Mole Valley, Reigate and Banstead, Sevenoaks, Slough, Spelthorne, Tandridge, Three Rivers, Thurrock, Watford, Welwyn Hatfield, and Windsor and Maidenhead.
+
+## B. Full synthetic control results {.unnumbered}
+
+```{r}
+#| label: tbl-app-full
+#| tbl-cap: "Synthetic control estimates for all treated boroughs, by expansion wave."
+#| echo: false
+#| warning: false
+
+readRDS(here("output", "results_table.rds")) |>
+    select(expansion, borough, anticipation_gap,
+           mspe_ratio, rank, fishers_exact_pvalue) |>
+    kable(digits = 3, booktabs = TRUE, longtable = TRUE,
+          col.names = c("Wave", "Borough", "Ant. gap",
+                        "MSPE", "Rank", "p")) |>
+    kable_styling(latex_options = c("striped", "repeat_header"))
+```
+
+## C. Alternative announcement dates {.unnumbered}
+
+The table below compares the primary and alternative dating specifications for the 2019 expansion. The equivalent comparison for the 2021 expansion is reported in Section 6: no borough reaches conventional significance under either the June 2018 confirmation or the April 2017 announcement date, with Newham replacing Hammersmith and Fulham as the closest case.
+
+```{r}
+#| label: tbl-app-dates-2019
+#| tbl-cap: "2019 expansion: primary (2017 Q2) against alternative (2017 Q4) dating. Westminster failed to converge under the alternative specification."
+#| echo: false
+
+sig_2019     <- readRDS(here("output", "sig_2019.rds"))
+sig_2019_alt <- readRDS(here("output", "sig_2019_alt.rds"))
+
+sig_2019 |>
+    select(borough, rank, fishers_exact_pvalue) |>
+    rename(rank_q2 = rank, p_q2 = fishers_exact_pvalue) |>
+    left_join(
+        sig_2019_alt |>
+            select(borough, rank, fishers_exact_pvalue) |>
+            rename(rank_q4 = rank, p_q4 = fishers_exact_pvalue),
+        by = "borough"
+    ) |>
+    arrange(rank_q2) |>
+    kable(digits = 3, booktabs = TRUE,
+          col.names = c("Borough", "Rank", "p", "Rank", "p")) |>
+    add_header_above(c(" " = 1, "2017 Q2 (primary)" = 2,
+                       "2017 Q4 (alternative)" = 2)) |>
+    kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+## D. Full disaggregation results {.unnumbered}
+
+```{r}
+#| label: tbl-app-disagg
+#| tbl-cap: "Permutation p-values for all treated boroughs across the four disaggregated outcomes, 2023 expansion. The minimum attainable p-value is 0.05 for each outcome."
+#| echo: false
+#| warning: false
+
+keep <- readRDS(here("output", "keepership_table.rds"))
+fuel <- readRDS(here("output", "fuel_table.rds"))
+
+keep |>
+    select(borough, pval_company, pval_private) |>
+    left_join(fuel |> select(borough, pval_bev, pval_phev), by = "borough") |>
+    arrange(pval_company) |>
+    kable(digits = 2, booktabs = TRUE, longtable = TRUE,
+          col.names = c("Borough", "Company", "Private", "BEV", "PHEV")) |>
+    kable_styling(latex_options = c("striped", "repeat_header"))
+```
+
+## E. Descriptive statistics {.unnumbered}
+
+```{r}
+#| label: tbl-app-summary
+#| tbl-cap: "Summary statistics by group, measured at 2022 Q3, the quarter preceding the 2023 announcement."
+#| echo: false
+
+readRDS(here("output", "summary_stats.rds")) |>
+    select(1:3, 6, 7, 9) |>
+    kable(digits = 3, booktabs = TRUE,
+          col.names = c("Group", "N", "ULEV share", "IMD",
+                        "Density", "Earnings")) |>
+    kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+## F. Geographic regression discontinuity feasibility {.unnumbered}
+
+```{r}
+#| label: tbl-app-rdd-density
+#| tbl-cap: "Number of London boroughs by distance from the 2021 ULEZ boundary, measured at 2022 Q4."
+#| echo: false
+#| warning: false
+readRDS(here("output", "rdd_density.rds")) |>
+    mutate(band = factor(band, levels = c("Within 2km", "2-5km", "Beyond 5km"))) |>
+    arrange(band) |>
+    kable(booktabs = TRUE) |>
+    kable_styling(latex_options = c("striped", "HOLD_position"))
+```
+
+```{r}
+#| label: tbl-app-rdd-est
+#| tbl-cap: "Illustrative regression discontinuity estimates at the 2021 boundary. Reported for transparency only: the effective sample sizes are too small, and the boundary coincides with earlier ULEZ treatment, so these are not interpretable as causal estimates."
+#| echo: false
+#| warning: false
+
+readRDS(here("output", "rdd_table.rds")) |>
+    select(period, n_left, n_right, bw_km, estimate, se, pvalue) |>
+    kable(digits = 3, booktabs = TRUE,
+          col.names = c("Period", "N inside", "N outside", "BW (km)",
+                        "Estimate", "SE", "p")) |>
+    kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+## G. Supplementary figures {.unnumbered}
+
+![Mean ULEV share by group across the full panel period, 2011 Q4 to 2024 Q4. Dashed lines mark the November 2022 announcement and the August 2023 implementation.](figures/raw_trends.png){#fig-app-trends width="90%"}
+
+![Interrupted time series fits by group, showing level and slope breaks at the November 2022 announcement.](figures/its_groups.png){#fig-app-its width="90%"}
+
+![Difference-in-differences interrupted time series: outer London against never-treated surrounding districts.](figures/its_did.png){#fig-app-itsdid width="90%"}
+
+![Mean ULEV share by group before the 2023 announcement, isolating the 2019 and 2021 waves. Dashed lines mark announcements, dotted lines implementations.](figures/pre_2023_trends.png){#fig-app-pre2023 width="90%"}
+
+![ULEV share disaggregated by fuel type across the three groups.](figures/disagg_fuel.png){#fig-app-fuel width="90%"}
+
+## H. Data sources and replication {.unnumbered}
+
+All code used to construct the panel, estimate the synthetic controls, and produce the tables and figures in this dissertation is available at [https://github.com/username/repository](https://github.com/username/repository).
