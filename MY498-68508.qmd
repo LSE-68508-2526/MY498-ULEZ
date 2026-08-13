@@ -1,6 +1,6 @@
 ---
 title: "Anticipatory Behavioural Responses to Environmental Policy Announcements: Evidence from the London Ultra Low Emission Zone"
-author: "Candidate 68508 \\\nSupervisor: Dr Ryan Hübert"
+author: "Candidate 68508 \\\nSupervisor: Dr Ryan Hübert \\\nWord Count: 9987 words"
 date: today
 abstract: |
     This paper examines whether credible policy announcements generate anticipatory behavioural changes, using the London Ultra Low Emission Zone (ULEZ) and its three expansions. It applies synthetic control methods to a balanced quarterly panel of 52 local authorities from 2011 Q4 to 2024 Q4. The donor pool is built from never-treated districts bordering Greater London, and treatment timing is dated to when each expansion became a credible implementation commitment. The results provide mixed evidence of anticipatory compliance across the three waves. The 2019 central London expansion gives marginal evidence of a response in Tower Hamlets (p = 0.077). No borough reaches significance for the 2021 inner London expansion, even though that wave had the longest anticipation window of the three. Hillingdon and Sutton show significant responses to the 2023 London-wide expansion, but outer London as a whole shows no differential effect against its surrounding districts. Estimated effects are small throughout, with the largest significant gap staying below one percentage point of the licensed fleet. One reason the aggregate effects are weak is that ULEV adoption accelerated everywhere at once. A common shift of roughly 0.022 hit London and its never-treated surroundings alike, and the synthetic control design differences this movement out. What the estimates capture is therefore the response over and above the wider region, not the total. Credibility, in the end, can move behaviour ahead of implementation, but it does not do so reliably or evenly, and where it does the effect is modest.
@@ -44,8 +44,6 @@ format:
                 \AtEndEnvironment{abstract}{\newpage}
 bibliography: references.bib
 csl: harvard-cite-them-right.csl
-filters:
-    - wordcount.lua
 ---
 
 ```{r}
