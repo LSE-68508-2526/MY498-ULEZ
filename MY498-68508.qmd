@@ -220,11 +220,11 @@ Section 6 then checks the findings against alternative identification strategies
 
 # Results
 
-This section reports the synthetic control estimates for the three ULEZ expansion announcements, under the specifications set out in Section 4. Results are given separately for the 2019 central London expansion, the 2021 inner London expansion, and the 2023 London-wide expansion. @tbl-sc-results summarises the main estimates for each wave, and full results for all treated boroughs are in Appendix B. As set out in Section 4.6, significance is judged jointly from each treated unit's placebo rank and its post-/pre-treatment MSPE ratio, not from the estimated anticipation gap alone.
+This section reports the synthetic control estimates for the three ULEZ expansion announcements, under the specifications set out in Section 4. Results are given separately for the 2019 central London expansion, the 2021 inner London expansion, and the 2023 London-wide expansion. @tbl-sc-results summarises the main estimates for each wave, and full results for all treated boroughs are in the Appendix. As set out in Section 4.6, significance is judged jointly from each treated unit's placebo rank and its post-/pre-treatment MSPE ratio, not from the estimated anticipation gap alone.
 
 ```{r}
 #| label: tbl-sc-results
-#| tbl-cap: "Synthetic control estimates by expansion wave. Boroughs with $p \\leq 0.20$ are shown; full results appear in Appendix B."
+#| tbl-cap: "Synthetic control estimates by expansion wave. Boroughs with $p \\leq 0.20$ are shown; full results appear in the Appendix."
 #| echo: false
 
 readRDS(here("output", "results_table_main.rds")) |>
@@ -246,7 +246,7 @@ Of the eight boroughs in the 2019 expansion, Tower Hamlets gives the strongest s
 
 The result stays marginal because two donor units post larger MSPE ratios than Tower Hamlets. Windsor and Maidenhead has the highest (1123), then Merton (1106), leaving Tower Hamlets third in the distribution. Under the permutation framework in Section 4.6, this means the observed divergence cannot be told apart from the variation among units that received no announcement, at the 5% level.
 
-The remaining treated boroughs - Islington, Camden, Hackney, Westminster, Southwark, and Lambeth - show no anticipatory effect under the primary specification, with permutation p-values from 0.615 to 0.949. Full results for all treated boroughs are in Appendix B.
+The remaining treated boroughs - Islington, Camden, Hackney, Westminster, Southwark, and Lambeth - show no anticipatory effect under the primary specification, with permutation p-values from 0.615 to 0.949. Full results for all treated boroughs are in the Appendix.
 
 ## The 2021 Inner Expansion
 
@@ -266,7 +266,7 @@ Two boroughs show statistically significant anticipatory responses under the pri
 
 ![Hillingdon and Sutton both track their synthetic controls closely before the November 2022 announcement, after which positive gaps open and persist through implementation.](figures/sc_2023_significant.png){#fig-sc2023 width="100%"}
 
-Beyond these two, there is little sign of systematic anticipatory effects across the remaining outer London boroughs. Barking and Dagenham and Harrow each reach permutation p-values of 0.15, and Croydon 0.20. Nine of the nineteen treated boroughs have negative estimated gaps relative to their synthetic controls, the largest being Wandsworth at −0.027. The distribution of estimated effects across outer London sits close to zero, not uniformly positive, with full results in Appendix B.
+Beyond these two, there is little sign of systematic anticipatory effects across the remaining outer London boroughs. Barking and Dagenham and Harrow each reach permutation p-values of 0.15, and Croydon 0.20. Nine of the nineteen treated boroughs have negative estimated gaps relative to their synthetic controls, the largest being Wandsworth at −0.027. The distribution of estimated effects across outer London sits close to zero, not uniformly positive, with full results in the Appendix.
 
 As Section 4.4 noted, these estimates are divergences relative to the untreated comparison districts. Any response shared by treated boroughs and donor units is removed by construction and does not show up here.
 
